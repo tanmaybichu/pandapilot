@@ -1,0 +1,4787 @@
+diff --git a/ArduPlane/ArduPlane.pde b/ArduPlane/ArduPlane.pde
+index e6bdd7e..4eb8373 100644
+--- a/ArduPlane/ArduPlane.pde
++++ b/ArduPlane/ArduPlane.pde
+@@ -88,6 +88,7 @@ static AP_SpdHgtControl::AircraftParameters aparm;
+ #include <AP_HAL_AVR.h>
+ #include <AP_HAL_AVR_SITL.h>
+ #include <AP_HAL_PX4.h>
++#include <AP_HAL_NAVSTIK.h>
+ #include <AP_HAL_Empty.h>
+ 
+ AP_HAL::BetterStream* cliSerial;
+@@ -179,6 +180,8 @@ AP_ADC_ADS7844 apm1_adc;
+ static AP_Baro_BMP085 barometer;
+ #elif CONFIG_BARO == AP_BARO_PX4
+ static AP_Baro_PX4 barometer;
++#elif CONFIG_BARO == AP_BARO_NAVSTIK
++static AP_Baro_Navstik barometer;
+ #elif CONFIG_BARO == AP_BARO_HIL
+ static AP_Baro_HIL barometer;
+ #elif CONFIG_BARO == AP_BARO_MS5611
+@@ -195,6 +198,8 @@ static AP_Baro_HIL barometer;
+ 
+ #if CONFIG_COMPASS == AP_COMPASS_PX4
+ static AP_Compass_PX4 compass;
++#elif CONFIG_COMPASS == AP_COMPASS_NAVSTIK
++static AP_Compass_Navstik compass;
+ #elif CONFIG_COMPASS == AP_COMPASS_HMC5843
+ static AP_Compass_HMC5843 compass;
+ #elif CONFIG_COMPASS == AP_COMPASS_HIL
+@@ -236,6 +241,8 @@ AP_GPS_HIL      g_gps_driver;
+ AP_InertialSensor_MPU6000 ins;
+ #elif CONFIG_INS_TYPE == CONFIG_INS_PX4
+ AP_InertialSensor_PX4 ins;
++#elif CONFIG_INS_TYPE == CONFIG_INS_NAVSTIK
++AP_InertialSensor_Navstik ins;
+ #elif CONFIG_INS_TYPE == CONFIG_INS_STUB
+ AP_InertialSensor_Stub ins;
+ #elif CONFIG_INS_TYPE == CONFIG_INS_OILPAN
+diff --git a/ArduPlane/ArduPlane.pde.orig b/ArduPlane/ArduPlane.pde.orig
+new file mode 100644
+index 0000000..e6bdd7e
+--- /dev/null
++++ b/ArduPlane/ArduPlane.pde.orig
+@@ -0,0 +1,1315 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#define THISFIRMWARE "ArduPlane V2.75beta1"
++/*
++   Lead developer: Andrew Tridgell
++ 
++   Authors:    Doug Weibel, Jose Julio, Jordi Munoz, Jason Short, Randy Mackay, Pat Hickey, John Arne Birkeland, Olivier Adler, Amilcar Lucas, Gregory Fletcher, Paul Riseborough, Brandon Jones, Jon Challinger
++   Thanks to:  Chris Anderson, Michael Oborne, Paul Mather, Bill Premerlani, James Cohen, JB from rotorFX, Automatik, Fefenin, Peter Meister, Remzibi, Yury Smirnov, Sandro Benigno, Max Levine, Roberto Navoni, Lorenz Meier, Yury MonZon
++
++   Please contribute your ideas! See http://dev.ardupilot.com for details
++
++   This program is free software: you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation, either version 3 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++////////////////////////////////////////////////////////////////////////////////
++// Header includes
++////////////////////////////////////////////////////////////////////////////////
++
++#include <math.h>
++#include <stdarg.h>
++#include <stdio.h>
++
++#include <AP_Common.h>
++#include <AP_Progmem.h>
++#include <AP_HAL.h>
++#include <AP_Menu.h>
++#include <AP_Param.h>
++#include <AP_GPS.h>         // ArduPilot GPS library
++#include <AP_Baro.h>        // ArduPilot barometer library
++#include <AP_Compass.h>     // ArduPilot Mega Magnetometer Library
++#include <AP_Math.h>        // ArduPilot Mega Vector/Matrix math Library
++#include <AP_ADC.h>         // ArduPilot Mega Analog to Digital Converter Library
++#include <AP_ADC_AnalogSource.h>
++#include <AP_InertialSensor.h> // Inertial Sensor Library
++#include <AP_AHRS.h>         // ArduPilot Mega DCM Library
++#include <PID.h>            // PID library
++#include <RC_Channel.h>     // RC Channel Library
++#include <AP_RangeFinder.h>     // Range finder library
++#include <Filter.h>                     // Filter library
++#include <AP_Buffer.h>      // APM FIFO Buffer
++#include <AP_Relay.h>       // APM relay
++#include <AP_Camera.h>          // Photo or video camera
++#include <AP_Airspeed.h>
++#include <memcheck.h>
++
++#include <APM_OBC.h>
++#include <APM_Control.h>
++#include <GCS_MAVLink.h>    // MAVLink GCS definitions
++#include <AP_Mount.h>           // Camera/Antenna mount
++#include <AP_Declination.h> // ArduPilot Mega Declination Helper Library
++#include <DataFlash.h>
++#include <SITL.h>
++#include <AP_Scheduler.h>       // main loop scheduler
++
++#include <AP_Navigation.h>
++#include <AP_L1_Control.h>
++#include <AP_RCMapper.h>        // RC input mapping library
++
++#include <AP_SpdHgtControl.h>
++#include <AP_TECS.h>
++
++// Pre-AP_HAL compatibility
++#include "compat.h"
++
++// Configuration
++#include "config.h"
++
++// Local modules
++#include "defines.h"
++
++// key aircraft parameters passed to the speed/height controller
++static AP_SpdHgtControl::AircraftParameters aparm;
++
++#include "Parameters.h"
++#include "GCS.h"
++
++#include <AP_HAL_AVR.h>
++#include <AP_HAL_AVR_SITL.h>
++#include <AP_HAL_PX4.h>
++#include <AP_HAL_Empty.h>
++
++AP_HAL::BetterStream* cliSerial;
++
++const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
++
++
++////////////////////////////////////////////////////////////////////////////////
++// Outback Challenge Failsafe Support
++////////////////////////////////////////////////////////////////////////////////
++#if OBC_FAILSAFE == ENABLED
++APM_OBC obc;
++#endif
++
++////////////////////////////////////////////////////////////////////////////////
++// the rate we run the main loop at
++////////////////////////////////////////////////////////////////////////////////
++static const AP_InertialSensor::Sample_rate ins_sample_rate = AP_InertialSensor::RATE_50HZ;
++
++////////////////////////////////////////////////////////////////////////////////
++// Parameters
++////////////////////////////////////////////////////////////////////////////////
++//
++// Global parameters are all contained within the 'g' class.
++//
++static Parameters g;
++
++// main loop scheduler
++static AP_Scheduler scheduler;
++
++// mapping between input channels
++static RCMapper rcmap;
++
++// primary control channels
++static RC_Channel *channel_roll;
++static RC_Channel *channel_pitch;
++static RC_Channel *channel_throttle;
++static RC_Channel *channel_rudder;
++
++////////////////////////////////////////////////////////////////////////////////
++// prototypes
++static void update_events(void);
++void gcs_send_text_fmt(const prog_char_t *fmt, ...);
++static void print_flight_mode(AP_HAL::BetterStream *port, uint8_t mode);
++
++
++////////////////////////////////////////////////////////////////////////////////
++// DataFlash
++////////////////////////////////////////////////////////////////////////////////
++#if LOGGING_ENABLED == ENABLED
++#if CONFIG_HAL_BOARD == HAL_BOARD_APM1
++DataFlash_APM1 DataFlash;
++#elif CONFIG_HAL_BOARD == HAL_BOARD_APM2
++DataFlash_APM2 DataFlash;
++#elif CONFIG_HAL_BOARD == HAL_BOARD_AVR_SITL
++DataFlash_SITL DataFlash;
++#elif CONFIG_HAL_BOARD == HAL_BOARD_PX4
++static DataFlash_File DataFlash("/fs/microsd/APM/logs");
++#else
++// no dataflash driver
++DataFlash_Empty DataFlash;
++#endif
++#endif
++
++////////////////////////////////////////////////////////////////////////////////
++// Sensors
++////////////////////////////////////////////////////////////////////////////////
++//
++// There are three basic options related to flight sensor selection.
++//
++// - Normal flight mode.  Real sensors are used.
++// - HIL Attitude mode.  Most sensors are disabled, as the HIL
++//   protocol supplies attitude information directly.
++// - HIL Sensors mode.  Synthetic sensors are configured that
++//   supply data from the simulation.
++//
++
++// All GPS access should be through this pointer.
++static GPS         *g_gps;
++
++// flight modes convenience array
++static AP_Int8          *flight_modes = &g.flight_mode1;
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_APM1
++AP_ADC_ADS7844 apm1_adc;
++#endif
++
++#if CONFIG_BARO == AP_BARO_BMP085
++static AP_Baro_BMP085 barometer;
++#elif CONFIG_BARO == AP_BARO_PX4
++static AP_Baro_PX4 barometer;
++#elif CONFIG_BARO == AP_BARO_HIL
++static AP_Baro_HIL barometer;
++#elif CONFIG_BARO == AP_BARO_MS5611
++ #if CONFIG_MS5611_SERIAL == AP_BARO_MS5611_SPI
++ static AP_Baro_MS5611 barometer(&AP_Baro_MS5611::spi);
++ #elif CONFIG_MS5611_SERIAL == AP_BARO_MS5611_I2C
++ static AP_Baro_MS5611 barometer(&AP_Baro_MS5611::i2c);
++ #else
++ #error Unrecognized CONFIG_MS5611_SERIAL setting.
++ #endif
++#else
++ #error Unrecognized CONFIG_BARO setting
++#endif
++
++#if CONFIG_COMPASS == AP_COMPASS_PX4
++static AP_Compass_PX4 compass;
++#elif CONFIG_COMPASS == AP_COMPASS_HMC5843
++static AP_Compass_HMC5843 compass;
++#elif CONFIG_COMPASS == AP_COMPASS_HIL
++static AP_Compass_HIL compass;
++#else
++ #error Unrecognized CONFIG_COMPASS setting
++#endif
++
++// GPS selection
++#if   GPS_PROTOCOL == GPS_PROTOCOL_AUTO
++AP_GPS_Auto     g_gps_driver(&g_gps);
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_NMEA
++AP_GPS_NMEA     g_gps_driver;
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_SIRF
++AP_GPS_SIRF     g_gps_driver;
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_UBLOX
++AP_GPS_UBLOX    g_gps_driver;
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_MTK
++AP_GPS_MTK      g_gps_driver;
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_MTK19
++AP_GPS_MTK19    g_gps_driver;
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_NONE
++AP_GPS_None     g_gps_driver;
++
++#elif GPS_PROTOCOL == GPS_PROTOCOL_HIL
++AP_GPS_HIL      g_gps_driver;
++
++#else
++  #error Unrecognised GPS_PROTOCOL setting.
++#endif // GPS PROTOCOL
++
++#if CONFIG_INS_TYPE == CONFIG_INS_MPU6000
++AP_InertialSensor_MPU6000 ins;
++#elif CONFIG_INS_TYPE == CONFIG_INS_PX4
++AP_InertialSensor_PX4 ins;
++#elif CONFIG_INS_TYPE == CONFIG_INS_STUB
++AP_InertialSensor_Stub ins;
++#elif CONFIG_INS_TYPE == CONFIG_INS_OILPAN
++AP_InertialSensor_Oilpan ins( &apm1_adc );
++#else
++  #error Unrecognised CONFIG_INS_TYPE setting.
++#endif // CONFIG_INS_TYPE
++
++AP_AHRS_DCM ahrs(&ins, g_gps);
++
++static AP_L1_Control L1_controller(&ahrs);
++static AP_TECS TECS_controller(&ahrs, aparm);
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_AVR_SITL
++SITL sitl;
++#endif
++
++// Training mode
++static bool training_manual_roll;  // user has manual roll control
++static bool training_manual_pitch; // user has manual pitch control
++
++////////////////////////////////////////////////////////////////////////////////
++// GCS selection
++////////////////////////////////////////////////////////////////////////////////
++static GCS_MAVLINK gcs0;
++static GCS_MAVLINK gcs3;
++
++// selected navigation controller
++static AP_Navigation *nav_controller = &L1_controller;
++
++// selected navigation controller
++static AP_SpdHgtControl *SpdHgt_Controller = &TECS_controller;
++
++////////////////////////////////////////////////////////////////////////////////
++// Analog Inputs
++////////////////////////////////////////////////////////////////////////////////
++
++// a pin for reading the receiver RSSI voltage. 
++static AP_HAL::AnalogSource *rssi_analog_source;
++
++static AP_HAL::AnalogSource *vcc_pin;
++
++static AP_HAL::AnalogSource * batt_volt_pin;
++static AP_HAL::AnalogSource * batt_curr_pin;
++
++////////////////////////////////////////////////////////////////////////////////
++// Relay
++////////////////////////////////////////////////////////////////////////////////
++static AP_Relay relay;
++
++// Camera
++#if CAMERA == ENABLED
++static AP_Camera camera(&relay);
++#endif
++
++////////////////////////////////////////////////////////////////////////////////
++// Global variables
++////////////////////////////////////////////////////////////////////////////////
++
++// APM2 only
++#if USB_MUX_PIN > 0
++static bool usb_connected;
++#endif
++
++/* Radio values
++ *               Channel assignments
++ *                       1   Ailerons
++ *                       2   Elevator
++ *                       3   Throttle
++ *                       4   Rudder
++ *                       5   Aux5
++ *                       6   Aux6
++ *                       7   Aux7
++ *                       8   Aux8/Mode
++ *               Each Aux channel can be configured to have any of the available auxiliary functions assigned to it.
++ *               See libraries/RC_Channel/RC_Channel_aux.h for more information
++ */
++
++////////////////////////////////////////////////////////////////////////////////
++// Radio
++////////////////////////////////////////////////////////////////////////////////
++// This is the state of the flight control system
++// There are multiple states defined such as MANUAL, FBW-A, AUTO
++enum FlightMode control_mode  = INITIALISING;
++// Used to maintain the state of the previous control switch position
++// This is set to -1 when we need to re-read the switch
++uint8_t oldSwitchPosition;
++// This is used to enable the inverted flight feature
++bool inverted_flight     = false;
++
++static struct {
++    // These are trim values used for elevon control
++    // For elevons radio_in[CH_ROLL] and radio_in[CH_PITCH] are
++    // equivalent aileron and elevator, not left and right elevon
++    uint16_t trim1;
++    uint16_t trim2;
++    // These are used in the calculation of elevon1_trim and elevon2_trim
++    uint16_t ch1_temp;
++    uint16_t ch2_temp;
++} elevon = {
++	trim1 : 1500,
++    trim2 : 1500,
++    ch1_temp : 1500,
++    ch2_temp : 1500
++};
++
++
++////////////////////////////////////////////////////////////////////////////////
++// Failsafe
++////////////////////////////////////////////////////////////////////////////////
++static struct {
++    // A flag if GCS joystick control is in use
++    uint8_t rc_override_active:1;
++
++    // Used to track if the value on channel 3 (throtttle) has fallen below the failsafe threshold
++    // RC receiver should be set up to output a low throttle value when signal is lost
++    uint8_t ch3_failsafe:1;
++
++    // has the saved mode for failsafe been set?
++    uint8_t saved_mode_set:1;
++
++    // saved flight mode
++    enum FlightMode saved_mode;
++
++    // A tracking variable for type of failsafe active
++    // Used for failsafe based on loss of RC signal or GCS signal
++    int16_t state;
++
++    // number of low ch3 values
++    uint8_t ch3_counter;
++
++    // the time when the last HEARTBEAT message arrived from a GCS
++    uint32_t last_heartbeat_ms;
++
++    // A timer used to track how long we have been in a "short failsafe" condition due to loss of RC signal
++    uint32_t ch3_timer_ms;
++} failsafe;
++
++
++////////////////////////////////////////////////////////////////////////////////
++// LED output
++////////////////////////////////////////////////////////////////////////////////
++// state of the GPS light (on/off)
++static bool GPS_light;
++
++////////////////////////////////////////////////////////////////////////////////
++// GPS variables
++////////////////////////////////////////////////////////////////////////////////
++// This is used to scale GPS values for EEPROM storage
++// 10^7 times Decimal GPS means 1 == 1cm
++// This approximation makes calculations integer and it's easy to read
++static const float t7                        = 10000000.0;
++// We use atan2 and other trig techniques to calaculate angles
++// A counter used to count down valid gps fixes to allow the gps estimate to settle
++// before recording our home position (and executing a ground start if we booted with an air start)
++static uint8_t ground_start_count      = 5;
++// Used to compute a speed estimate from the first valid gps fixes to decide if we are
++// on the ground or in the air.  Used to decide if a ground start is appropriate if we
++// booted with an air start.
++static int16_t ground_start_avg;
++
++// true if we have a position estimate from AHRS
++static bool have_position;
++
++////////////////////////////////////////////////////////////////////////////////
++// Location & Navigation
++////////////////////////////////////////////////////////////////////////////////
++
++// Direction held during phases of takeoff and landing
++// deg * 100 dir of plane,  A value of -1 indicates the course has not been set/is not in use
++// this is a 0..36000 value, or -1 for disabled
++static int32_t hold_course_cd                 = -1;              // deg * 100 dir of plane
++
++// There may be two active commands in Auto mode.
++// This indicates the active navigation command by index number
++static uint8_t nav_command_index;
++// This indicates the active non-navigation command by index number
++static uint8_t non_nav_command_index;
++// This is the command type (eg navigate to waypoint) of the active navigation command
++static uint8_t nav_command_ID          = NO_COMMAND;
++static uint8_t non_nav_command_ID      = NO_COMMAND;
++
++////////////////////////////////////////////////////////////////////////////////
++// Airspeed
++////////////////////////////////////////////////////////////////////////////////
++// The calculated airspeed to use in FBW-B.  Also used in higher modes for insuring min ground speed is met.
++// Also used for flap deployment criteria.  Centimeters per second.
++static int32_t target_airspeed_cm;
++
++// The difference between current and desired airspeed.  Used in the pitch controller.  Centimeters per second.
++static float airspeed_error_cm;
++
++// An amount that the airspeed should be increased in auto modes based on the user positioning the
++// throttle stick in the top half of the range.  Centimeters per second.
++static int16_t airspeed_nudge_cm;
++
++// Similar to airspeed_nudge, but used when no airspeed sensor.
++// 0-(throttle_max - throttle_cruise) : throttle nudge in Auto mode using top 1/2 of throttle stick travel
++static int16_t throttle_nudge = 0;
++
++// receiver RSSI
++static uint8_t receiver_rssi;
++
++
++////////////////////////////////////////////////////////////////////////////////
++// Ground speed
++////////////////////////////////////////////////////////////////////////////////
++// The amount current ground speed is below min ground speed.  Centimeters per second
++static int32_t groundspeed_undershoot = 0;
++
++// Difference between current altitude and desired altitude.  Centimeters
++static int32_t altitude_error_cm;
++
++////////////////////////////////////////////////////////////////////////////////
++// Battery Sensors
++////////////////////////////////////////////////////////////////////////////////
++static struct {
++    // Battery pack 1 voltage.  Initialized above the low voltage
++    // threshold to pre-load the filter and prevent low voltage events
++    // at startup.
++    float voltage;
++    // Battery pack 1 instantaneous currrent draw.  Amperes
++    float current_amps;
++    // Totalized current (Amp-hours) from battery 1
++    float current_total_mah;
++    // true when a low battery event has happened
++    bool low_batttery;
++    // time when current was last read
++    uint32_t last_time_ms;
++} battery;
++
++////////////////////////////////////////////////////////////////////////////////
++// Airspeed Sensors
++////////////////////////////////////////////////////////////////////////////////
++AP_Airspeed airspeed;
++Airspeed_Calibration airspeed_calibration;
++
++////////////////////////////////////////////////////////////////////////////////
++// ACRO controller state
++////////////////////////////////////////////////////////////////////////////////
++static struct {
++    bool locked_roll;
++    bool locked_pitch;
++    float locked_roll_err;
++    int32_t locked_pitch_cd;
++} acro_state;
++
++////////////////////////////////////////////////////////////////////////////////
++// CRUISE controller state
++////////////////////////////////////////////////////////////////////////////////
++static struct {
++    bool locked_heading;
++    int32_t locked_heading_cd;
++    uint32_t lock_timer_ms;
++} cruise_state;
++
++////////////////////////////////////////////////////////////////////////////////
++// flight mode specific
++////////////////////////////////////////////////////////////////////////////////
++// Flag for using gps ground course instead of INS yaw.  Set false when takeoff command in process.
++static bool takeoff_complete    = true;
++// Flag to indicate if we have landed.
++//Set land_complete if we are within 2 seconds distance or within 3 meters altitude of touchdown
++static bool land_complete;
++// Altitude threshold to complete a takeoff command in autonomous modes.  Centimeters
++static int32_t takeoff_altitude_cm;
++
++// Minimum pitch to hold during takeoff command execution.  Hundredths of a degree
++static int16_t takeoff_pitch_cd;
++
++// true if we are in an auto-throttle mode, which means
++// we need to run the speed/height controller
++static bool auto_throttle_mode;
++
++// this controls throttle suppression in auto modes
++static bool throttle_suppressed;
++
++////////////////////////////////////////////////////////////////////////////////
++// Loiter management
++////////////////////////////////////////////////////////////////////////////////
++
++////////////////////////////////////////////////////////////////////////////////
++// Navigation control variables
++////////////////////////////////////////////////////////////////////////////////
++// The instantaneous desired bank angle.  Hundredths of a degree
++static int32_t nav_roll_cd;
++
++// The instantaneous desired pitch angle.  Hundredths of a degree
++static int32_t nav_pitch_cd;
++
++////////////////////////////////////////////////////////////////////////////////
++// Waypoint distances
++////////////////////////////////////////////////////////////////////////////////
++// Distance between plane and next waypoint.  Meters
++static uint32_t wp_distance;
++
++// Distance between previous and next waypoint.  Meters
++static uint32_t wp_totalDistance;
++
++/*
++  meta data to support counting the number of circles in a loiter
++ */
++static struct {
++    // previous target bearing, used to update sum_cd
++    int32_t old_target_bearing_cd;
++
++    // Total desired rotation in a loiter.  Used for Loiter Turns commands. 
++    int32_t total_cd;
++
++    // total angle completed in the loiter so far
++    int32_t sum_cd;
++
++	// Direction for loiter. 1 for clockwise, -1 for counter-clockwise
++    int8_t direction;
++
++	// start time of the loiter.  Milliseconds.
++    uint32_t start_time_ms;
++
++	// The amount of time we should stay in a loiter for the Loiter Time command.  Milliseconds.
++    uint32_t time_max_ms;
++} loiter;
++
++
++// event control state
++enum event_type { 
++    EVENT_TYPE_RELAY=0,
++    EVENT_TYPE_SERVO=1
++};
++
++static struct {
++    enum event_type type;
++
++	// when the event was started in ms
++    uint32_t start_time_ms;
++
++	// how long to delay the next firing of event in millis
++    uint16_t delay_ms;
++
++	// how many times to cycle : -1 (or -2) = forever, 2 = do one cycle, 4 = do two cycles
++    int16_t repeat;
++
++    // RC channel for servos
++    uint8_t rc_channel;
++
++	// PWM for servos
++	uint16_t servo_value;
++
++	// the value used to cycle events (alternate value to event_value)
++    uint16_t undo_value;
++} event_state;
++
++
++////////////////////////////////////////////////////////////////////////////////
++// Conditional command
++////////////////////////////////////////////////////////////////////////////////
++// A value used in condition commands (eg delay, change alt, etc.)
++// For example in a change altitude command, it is the altitude to change to.
++static int32_t condition_value;
++// A starting value used to check the status of a conditional command.
++// For example in a delay command the condition_start records that start time for the delay
++static uint32_t condition_start;
++// A value used in condition commands.  For example the rate at which to change altitude.
++static int16_t condition_rate;
++
++////////////////////////////////////////////////////////////////////////////////
++// 3D Location vectors
++// Location structure defined in AP_Common
++////////////////////////////////////////////////////////////////////////////////
++// The home location used for RTL.  The location is set when we first get stable GPS lock
++static struct   Location home;
++// Flag for if we have g_gps lock and have set the home location
++static bool home_is_set;
++// The location of the previous waypoint.  Used for track following and altitude ramp calculations
++static struct   Location prev_WP;
++// The plane's current location
++static struct   Location current_loc;
++// The location of the current/active waypoint.  Used for altitude ramp, track following and loiter calculations.
++static struct   Location next_WP;
++// The location of the active waypoint in Guided mode.
++static struct   Location guided_WP;
++// The location structure information from the Nav command being processed
++static struct   Location next_nav_command;
++// The location structure information from the Non-Nav command being processed
++static struct   Location next_nonnav_command;
++
++////////////////////////////////////////////////////////////////////////////////
++// Altitude / Climb rate control
++////////////////////////////////////////////////////////////////////////////////
++// The current desired altitude.  Altitude is linearly ramped between waypoints.  Centimeters
++static int32_t target_altitude_cm;
++// Altitude difference between previous and current waypoint.  Centimeters
++static int32_t offset_altitude_cm;
++
++////////////////////////////////////////////////////////////////////////////////
++// INS variables
++////////////////////////////////////////////////////////////////////////////////
++// The main loop execution time.  Seconds
++//This is the time between calls to the DCM algorithm and is the Integration time for the gyros.
++static float G_Dt                                               = 0.02;
++
++////////////////////////////////////////////////////////////////////////////////
++// Performance monitoring
++////////////////////////////////////////////////////////////////////////////////
++// Timer used to accrue data and trigger recording of the performanc monitoring log message
++static int32_t perf_mon_timer;
++// The maximum main loop execution time recorded in the current performance monitoring interval
++static int16_t G_Dt_max = 0;
++// The number of gps fixes recorded in the current performance monitoring interval
++static uint8_t gps_fix_count = 0;
++
++////////////////////////////////////////////////////////////////////////////////
++// System Timers
++////////////////////////////////////////////////////////////////////////////////
++// Time in miliseconds of start of main control loop.  Milliseconds
++static uint32_t fast_loopTimer_ms;
++
++// Time Stamp when fast loop was complete.  Milliseconds
++static uint32_t fast_loopTimeStamp_ms;
++
++// Number of milliseconds used in last main loop cycle
++static uint8_t delta_ms_fast_loop;
++
++// Counter of main loop executions.  Used for performance monitoring and failsafe processing
++static uint16_t mainLoop_count;
++
++// % MCU cycles used
++static float load;
++
++
++// Camera/Antenna mount tracking and stabilisation stuff
++// --------------------------------------
++#if MOUNT == ENABLED
++// current_loc uses the baro/gps soloution for altitude rather than gps only.
++// mabe one could use current_loc for lat/lon too and eliminate g_gps alltogether?
++AP_Mount camera_mount(&current_loc, g_gps, &ahrs, 0);
++#endif
++
++#if MOUNT2 == ENABLED
++// current_loc uses the baro/gps soloution for altitude rather than gps only.
++// mabe one could use current_loc for lat/lon too and eliminate g_gps alltogether?
++AP_Mount camera_mount2(&current_loc, g_gps, &ahrs, 1);
++#endif
++
++#if CAMERA == ENABLED
++//pinMode(camtrig, OUTPUT);			// these are free pins PE3(5), PH3(15), PH6(18), PB4(23), PB5(24), PL1(36), PL3(38), PA6(72), PA7(71), PK0(89), PK1(88), PK2(87), PK3(86), PK4(83), PK5(84), PK6(83), PK7(82)
++#endif
++
++////////////////////////////////////////////////////////////////////////////////
++// Top-level logic
++////////////////////////////////////////////////////////////////////////////////
++
++/*
++  scheduler table - all regular tasks apart from the fast_loop()
++  should be listed here, along with how often they should be called
++  (in 20ms units) and the maximum time they are expected to take (in
++  microseconds)
++ */
++static const AP_Scheduler::Task scheduler_tasks[] PROGMEM = {
++    { update_speed_height,    1,    900 },
++    { update_flight_mode,     1,   1000 },
++    { stabilize,              1,   3200 },
++    { set_servos,             1,   1100 },
++    { read_control_switch,    7,   1000 },
++    { update_GPS,             5,   4000 },
++    { navigate,               5,   4800 },
++    { update_compass,         5,   1500 },
++    { read_airspeed,          5,   1500 },
++    { update_alt,             5,   3400 },
++    { calc_altitude_error,    5,   1000 },
++    { update_commands,        5,   7000 },
++    { obc_fs_check,           5,   1000 },
++    { gcs_update,             1,   1700 },
++    { gcs_data_stream_send,   2,   3000 },
++    { update_mount,           1,   1500 },
++    { update_events,		 15,   1500 },
++    { check_usb_mux,          5,   1000 },
++    { read_battery,           5,   1000 },
++    { compass_accumulate,     1,   1500 },
++    { barometer_accumulate,   1,    900 },
++    { one_second_loop,       50,   3900 },
++    { airspeed_ratio_update, 50,   1000 },
++    { update_logging,         5,   1000 },
++    { read_receiver_rssi,     5,   1000 },
++    { check_long_failsafe,   15,   1000 },
++};
++
++// setup the var_info table
++AP_Param param_loader(var_info, WP_START_BYTE);
++
++void setup() {
++    // this needs to be the first call, as it fills memory with
++    // sentinel values
++    memcheck_init();
++
++    cliSerial = hal.console;
++
++    // load the default values of variables listed in var_info[]
++    AP_Param::setup_sketch_defaults();
++
++    rssi_analog_source = hal.analogin->channel(ANALOG_INPUT_NONE);
++
++    vcc_pin = hal.analogin->channel(ANALOG_INPUT_BOARD_VCC);
++
++    batt_volt_pin = hal.analogin->channel(g.battery_volt_pin);
++    batt_curr_pin = hal.analogin->channel(g.battery_curr_pin);
++   
++    init_ardupilot();
++
++    // initialise the main loop scheduler
++    scheduler.init(&scheduler_tasks[0], sizeof(scheduler_tasks)/sizeof(scheduler_tasks[0]));
++}
++
++void loop()
++{
++    uint32_t timer = millis();
++    // We want this to execute at 50Hz, but synchronised with the gyro/accel
++    uint16_t num_samples = ins.num_samples_available();
++    if (num_samples >= 1) {
++        delta_ms_fast_loop      = timer - fast_loopTimer_ms;
++        load                = (float)(fast_loopTimeStamp_ms - fast_loopTimer_ms)/delta_ms_fast_loop;
++        G_Dt                = delta_ms_fast_loop * 0.001f;
++        fast_loopTimer_ms   = timer;
++
++        mainLoop_count++;
++
++        // Execute the fast loop
++        // ---------------------
++        fast_loop();
++
++        // tell the scheduler one tick has passed
++        scheduler.tick();
++
++        fast_loopTimeStamp_ms = millis();
++    } else {
++        uint16_t dt = timer - fast_loopTimer_ms;
++        // we use 19 not 20 here to ensure we run the next loop on
++        // time - it means we spin for 5% of the time when waiting for
++        // the next sample from the IMU
++        if (dt < 19) {
++            uint16_t time_to_next_loop = 19 - dt;
++            scheduler.run(time_to_next_loop * 1000U);
++        }
++    }
++}
++
++// Main loop 50Hz
++static void fast_loop()
++{
++    // This is the fast loop - we want it to execute at 50Hz if possible
++    // -----------------------------------------------------------------
++    if (delta_ms_fast_loop > G_Dt_max)
++        G_Dt_max = delta_ms_fast_loop;
++
++    // Read radio
++    // ----------
++    read_radio();
++
++    // try to send any deferred messages if the serial port now has
++    // some space available
++    gcs_send_message(MSG_RETRY_DEFERRED);
++
++    // check for loss of control signal failsafe condition
++    // ------------------------------------
++    check_short_failsafe();
++
++#if HIL_MODE != HIL_MODE_DISABLED
++    // update hil before AHRS update
++    gcs_update();
++#endif
++
++    ahrs.update();
++
++    if (g.log_bitmask & MASK_LOG_ATTITUDE_FAST)
++        Log_Write_Attitude();
++
++    if (g.log_bitmask & MASK_LOG_IMU)
++        Log_Write_IMU();
++}
++
++/*
++  update 50Hz speed/height controller
++ */
++static void update_speed_height(void)
++{
++    if (auto_throttle_mode && !throttle_suppressed) {
++	    // Call TECS 50Hz update
++        SpdHgt_Controller->update_50hz(relative_altitude());
++    }
++}
++
++
++/*
++  update camera mount
++ */
++static void update_mount(void)
++{
++#if MOUNT == ENABLED
++    camera_mount.update_mount_position();
++#endif
++
++#if MOUNT2 == ENABLED
++    camera_mount2.update_mount_position();
++#endif
++
++#if CAMERA == ENABLED
++    camera.trigger_pic_cleanup();
++#endif
++}
++
++/*
++  read and update compass
++ */
++static void update_compass(void)
++{
++    if (g.compass_enabled && compass.read()) {
++        ahrs.set_compass(&compass);
++        compass.null_offsets();
++        if (g.log_bitmask & MASK_LOG_COMPASS) {
++            Log_Write_Compass();
++        }
++    } else {
++        ahrs.set_compass(NULL);
++    }
++}
++
++/*
++  if the compass is enabled then try to accumulate a reading
++ */
++static void compass_accumulate(void)
++{
++    if (g.compass_enabled) {
++        compass.accumulate();
++    }    
++}
++
++/*
++  try to accumulate a baro reading
++ */
++static void barometer_accumulate(void)
++{
++    barometer.accumulate();
++}
++
++/*
++  do 10Hz logging
++ */
++static void update_logging(void)
++{
++    if ((g.log_bitmask & MASK_LOG_ATTITUDE_MED) && !(g.log_bitmask & MASK_LOG_ATTITUDE_FAST))
++        Log_Write_Attitude();
++    
++    if (g.log_bitmask & MASK_LOG_CTUN)
++        Log_Write_Control_Tuning();
++    
++    if (g.log_bitmask & MASK_LOG_NTUN)
++        Log_Write_Nav_Tuning();
++}
++
++/*
++  check for OBC failsafe check
++ */
++static void obc_fs_check(void)
++{
++#if OBC_FAILSAFE == ENABLED
++    // perform OBC failsafe checks
++    obc.check(OBC_MODE(control_mode),
++              last_heartbeat_ms,
++              g_gps ? g_gps->last_fix_time : 0);
++#endif
++}
++
++
++/*
++  update aux servo mappings
++ */
++static void update_aux(void)
++{
++#if CONFIG_HAL_BOARD == HAL_BOARD_PX4
++        update_aux_servo_function(&g.rc_5, &g.rc_6, &g.rc_7, &g.rc_8, &g.rc_9, &g.rc_10, &g.rc_11, &g.rc_12);
++#elif CONFIG_HAL_BOARD == HAL_BOARD_APM2
++        update_aux_servo_function(&g.rc_5, &g.rc_6, &g.rc_7, &g.rc_8, &g.rc_10, &g.rc_11);
++#else
++        update_aux_servo_function(&g.rc_5, &g.rc_6, &g.rc_7, &g.rc_8);
++#endif
++        enable_aux_servos();
++
++#if MOUNT == ENABLED
++        camera_mount.update_mount_type();
++#endif
++#if MOUNT2 == ENABLED
++        camera_mount2.update_mount_type();
++#endif
++}
++
++static void one_second_loop()
++{
++    if (g.log_bitmask & MASK_LOG_CURRENT)
++        Log_Write_Current();
++
++    // send a heartbeat
++    gcs_send_message(MSG_HEARTBEAT);
++
++    // make it possible to change control channel ordering at runtime
++    set_control_channels();
++
++    // make it possible to change orientation at runtime
++    ahrs.set_orientation();
++
++    // sync MAVLink system ID
++    mavlink_system.sysid = g.sysid_this_mav;
++
++    update_aux();
++
++    static uint8_t counter;
++    counter++;
++
++    if (counter == 20) {
++        if (g.log_bitmask & MASK_LOG_PM)
++            Log_Write_Performance();
++        resetPerfData();
++    }
++
++    if (counter >= 60) {                                               
++        if(g.compass_enabled) {
++            compass.save_offsets();
++        }
++        counter = 0;
++    }
++}
++
++/*
++  once a second update the airspeed calibration ratio
++ */
++static void airspeed_ratio_update(void)
++{
++    if (!airspeed.enabled() ||
++        g_gps->status() < GPS::GPS_OK_FIX_3D ||
++        g_gps->ground_speed_cm < 400) {
++        return;
++    }
++    airspeed.update_calibration(g_gps->velocity_vector());
++}
++
++
++/*
++  read the GPS and update position
++ */
++static void update_GPS(void)
++{
++    static uint32_t last_gps_reading;
++    g_gps->update();
++    update_GPS_light();
++
++    if (g_gps->last_message_time_ms() != last_gps_reading) {
++        last_gps_reading = g_gps->last_message_time_ms();
++        if (g.log_bitmask & MASK_LOG_GPS) {
++            Log_Write_GPS();
++        }
++    }
++
++    // get position from AHRS
++    have_position = ahrs.get_position(&current_loc);
++
++    if (g_gps->new_data && g_gps->status() >= GPS::GPS_OK_FIX_3D) {
++        g_gps->new_data = false;
++
++        // for performance
++        // ---------------
++        gps_fix_count++;
++
++        if(ground_start_count > 1) {
++            ground_start_count--;
++            ground_start_avg += g_gps->ground_speed_cm;
++
++        } else if (ground_start_count == 1) {
++            // We countdown N number of good GPS fixes
++            // so that the altitude is more accurate
++            // -------------------------------------
++            if (current_loc.lat == 0) {
++                ground_start_count = 5;
++
++            } else {
++                init_home();
++
++                if (g.compass_enabled) {
++                    // Set compass declination automatically
++                    compass.set_initial_location(g_gps->latitude, g_gps->longitude);
++                }
++                ground_start_count = 0;
++            }
++        }
++
++        // see if we've breached the geo-fence
++        geofence_check(false);
++
++#if CAMERA == ENABLED
++        if (camera.update_location(current_loc) == true) {
++            do_take_picture();
++        }
++#endif        
++    }
++
++    calc_gndspeed_undershoot();
++}
++
++static void update_flight_mode(void)
++{
++    if(control_mode == AUTO) {
++
++        switch(nav_command_ID) {
++        case MAV_CMD_NAV_TAKEOFF:
++            if (hold_course_cd == -1) {
++                // we don't yet have a heading to hold - just level
++                // the wings until we get up enough speed to get a GPS heading
++                nav_roll_cd = 0;
++            } else {
++                calc_nav_roll();
++                // during takeoff use the level flight roll limit to
++                // prevent large course corrections
++				nav_roll_cd = constrain_int32(nav_roll_cd, -g.level_roll_limit*100UL, g.level_roll_limit*100UL);
++            }
++
++            if (airspeed.use()) {
++                calc_nav_pitch();
++                if (nav_pitch_cd < takeoff_pitch_cd)
++                    nav_pitch_cd = takeoff_pitch_cd;
++            } else {
++                nav_pitch_cd = (g_gps->ground_speed_cm / (float)g.airspeed_cruise_cm) * takeoff_pitch_cd;
++                nav_pitch_cd = constrain_int32(nav_pitch_cd, 500, takeoff_pitch_cd);
++            }
++
++            // max throttle for takeoff
++            channel_throttle->servo_out = aparm.throttle_max;
++
++            break;
++
++        case MAV_CMD_NAV_LAND:
++            calc_nav_roll();
++
++            if (land_complete) {
++                // during final approach constrain roll to the range
++                // allowed for level flight
++                nav_roll_cd = constrain_int32(nav_roll_cd, -g.level_roll_limit*100UL, g.level_roll_limit*100UL);
++
++                // hold pitch constant in final approach
++                nav_pitch_cd = g.land_pitch_cd;
++            } else {
++                calc_nav_pitch();
++                if (!airspeed.use()) {
++                    // when not under airspeed control, don't allow
++                    // down pitch in landing
++                    nav_pitch_cd = constrain_int32(nav_pitch_cd, 0, nav_pitch_cd);
++                }
++            }
++            calc_throttle();
++
++            if (land_complete) {
++                // we are in the final stage of a landing - force
++                // zero throttle
++                channel_throttle->servo_out = 0;
++            }
++            break;
++
++        default:
++            // we are doing normal AUTO flight, the special cases
++            // are for takeoff and landing
++            hold_course_cd = -1;
++            land_complete = false;
++            calc_nav_roll();
++            calc_nav_pitch();
++            calc_throttle();
++            break;
++        }
++    }else{
++        // hold_course is only used in takeoff and landing
++        hold_course_cd = -1;
++
++        switch(control_mode) {
++        case RTL:
++        case LOITER:
++        case GUIDED:
++            calc_nav_roll();
++            calc_nav_pitch();
++            calc_throttle();
++            break;
++
++        case TRAINING: {
++            training_manual_roll = false;
++            training_manual_pitch = false;
++
++            // if the roll is past the set roll limit, then
++            // we set target roll to the limit
++            if (ahrs.roll_sensor >= g.roll_limit_cd) {
++                nav_roll_cd = g.roll_limit_cd;
++            } else if (ahrs.roll_sensor <= -g.roll_limit_cd) {
++                nav_roll_cd = -g.roll_limit_cd;                
++            } else {
++                training_manual_roll = true;
++                nav_roll_cd = 0;
++            }
++
++            // if the pitch is past the set pitch limits, then
++            // we set target pitch to the limit
++            if (ahrs.pitch_sensor >= aparm.pitch_limit_max_cd) {
++                nav_pitch_cd = aparm.pitch_limit_max_cd;
++            } else if (ahrs.pitch_sensor <= aparm.pitch_limit_min_cd) {
++                nav_pitch_cd = aparm.pitch_limit_min_cd;
++            } else {
++                training_manual_pitch = true;
++                nav_pitch_cd = 0;
++            }
++            if (inverted_flight) {
++                nav_pitch_cd = -nav_pitch_cd;
++            }
++            break;
++        }
++
++        case ACRO: {
++            // handle locked/unlocked control
++            if (acro_state.locked_roll) {
++                nav_roll_cd = acro_state.locked_roll_err;
++            } else {
++                nav_roll_cd = ahrs.roll_sensor;
++            }
++            if (acro_state.locked_pitch) {
++                nav_pitch_cd = acro_state.locked_pitch_cd;
++            } else {
++                nav_pitch_cd = ahrs.pitch_sensor;
++            }
++            break;
++        }
++
++        case FLY_BY_WIRE_A: {
++            // set nav_roll and nav_pitch using sticks
++            nav_roll_cd  = channel_roll->norm_input() * g.roll_limit_cd;
++            nav_roll_cd = constrain_int32(nav_roll_cd, -g.roll_limit_cd, g.roll_limit_cd);
++            float pitch_input = channel_pitch->norm_input();
++            if (pitch_input > 0) {
++                nav_pitch_cd = pitch_input * aparm.pitch_limit_max_cd;
++            } else {
++                nav_pitch_cd = -(pitch_input * aparm.pitch_limit_min_cd);
++            }
++            nav_pitch_cd = constrain_int32(nav_pitch_cd, aparm.pitch_limit_min_cd.get(), aparm.pitch_limit_max_cd.get());
++            if (inverted_flight) {
++                nav_pitch_cd = -nav_pitch_cd;
++            }
++            break;
++        }
++
++        case FLY_BY_WIRE_B:
++            // Thanks to Yury MonZon for the altitude limit code!
++            nav_roll_cd = channel_roll->norm_input() * g.roll_limit_cd;
++            update_fbwb_speed_height();
++            break;
++
++        case CRUISE:
++            /*
++              in CRUISE mode we use the navigation code to control
++              roll when heading is locked. Heading becomes unlocked on
++              any aileron or rudder input
++             */
++            if ((channel_roll->control_in != 0 ||
++                 channel_rudder->control_in != 0)) {                
++                cruise_state.locked_heading = false;
++                cruise_state.lock_timer_ms = 0;
++            }                 
++
++            if (!cruise_state.locked_heading) {
++                nav_roll_cd = channel_roll->norm_input() * g.roll_limit_cd;
++            } else {
++                calc_nav_roll();
++            }
++            update_fbwb_speed_height();
++            break;
++
++        case STABILIZE:
++            nav_roll_cd        = 0;
++            nav_pitch_cd       = 0;
++            // throttle is passthrough
++            break;
++
++        case CIRCLE:
++            // we have no GPS installed and have lost radio contact
++            // or we just want to fly around in a gentle circle w/o GPS,
++            // holding altitude at the altitude we set when we
++            // switched into the mode
++            nav_roll_cd  = g.roll_limit_cd / 3;
++            calc_nav_pitch();
++            calc_throttle();
++            break;
++
++        case MANUAL:
++            // servo_out is for Sim control only
++            // ---------------------------------
++            channel_roll->servo_out = channel_roll->pwm_to_angle();
++            channel_pitch->servo_out = channel_pitch->pwm_to_angle();
++            channel_rudder->servo_out = channel_rudder->pwm_to_angle();
++            break;
++            //roll: -13788.000,  pitch: -13698.000,   thr: 0.000, rud: -13742.000
++
++        case INITIALISING:
++        case AUTO:
++            // handled elsewhere
++            break;
++        }
++    }
++}
++
++static void update_navigation()
++{
++    // wp_distance is in ACTUAL meters, not the *100 meters we get from the GPS
++    // ------------------------------------------------------------------------
++
++    // distance and bearing calcs only
++    switch(control_mode) {
++    case AUTO:
++        verify_commands();
++        break;
++            
++    case LOITER:
++    case RTL:
++    case GUIDED:
++        update_loiter();
++        break;
++
++    case CRUISE:
++        update_cruise();
++        break;
++
++    case MANUAL:
++    case STABILIZE:
++    case TRAINING:
++    case INITIALISING:
++    case ACRO:
++    case FLY_BY_WIRE_A:
++    case FLY_BY_WIRE_B:
++    case CIRCLE:
++        // nothing to do
++        break;
++    }
++}
++
++
++static void update_alt()
++{
++    // this function is in place to potentially add a sonar sensor in the future
++    //altitude_sensor = BARO;
++
++    if (barometer.healthy) {
++        // alt_MSL centimeters (centimeters)
++        current_loc.alt = (1 - g.altitude_mix) * g_gps->altitude_cm;
++        current_loc.alt += g.altitude_mix * (read_barometer() + home.alt);
++    } else if (g_gps->status() >= GPS::GPS_OK_FIX_3D) {
++        // alt_MSL centimeters (centimeters)
++        current_loc.alt = g_gps->altitude_cm;
++    }
++
++    geofence_check(true);
++
++    // Update the speed & height controller states
++    if (auto_throttle_mode && !throttle_suppressed) {
++        SpdHgt_Controller->update_pitch_throttle(target_altitude_cm - home.alt + (int32_t(g.alt_offset)*100), 
++                                                 target_airspeed_cm,
++                                                 (control_mode==AUTO && takeoff_complete == false), 
++                                                 takeoff_pitch_cd,
++                                                 throttle_nudge,
++                                                 relative_altitude());
++        if (g.log_bitmask & MASK_LOG_TECS) {
++            Log_Write_TECS_Tuning();
++        }
++    }
++
++    // tell AHRS the airspeed to true airspeed ratio
++    airspeed.set_EAS2TAS(barometer.get_EAS2TAS());
++}
++
++AP_HAL_MAIN();
+diff --git a/ArduPlane/config.h b/ArduPlane/config.h
+index 138af3d..4e0cd3a 100644
+--- a/ArduPlane/config.h
++++ b/ArduPlane/config.h
+@@ -144,6 +144,24 @@
+  # define CONFIG_INS_TYPE CONFIG_INS_PX4
+  # define CONFIG_BARO AP_BARO_PX4
+  # define CONFIG_COMPASS  AP_COMPASS_PX4
++ # define SERIAL0_BAUD 57600
++#elif CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++ # define A_LED_PIN        27
++ # define B_LED_PIN        26
++ # define C_LED_PIN        25
++ # define LED_ON           LOW
++ # define LED_OFF          HIGH
++ # define BATTERY_VOLT_PIN      -1
++ # define BATTERY_CURR_PIN      -1
++ # define CONFIG_INS_TYPE CONFIG_INS_NAVSTIK
++ # define CONFIG_PITOT_SOURCE PITOT_SOURCE_ANALOG_PIN
++ # define CONFIG_PITOT_SOURCE_ANALOG_PIN 11
++ # define CONFIG_PITOT_SCALING (4.0*5.0/3.3)
++ # define MAGNETOMETER ENABLED
++ # define MAG_ORIENTATION   ROTATION_NONE
++ # define CONFIG_BARO AP_BARO_NAVSTIK
++ # define CONFIG_COMPASS  AP_COMPASS_NAVSTIK
++ # define GPS_PROTOCOL GPS_PROTOCOL_UBLOX
+  # define SERIAL0_BAUD 115200
+ #endif
+ 
+diff --git a/ArduPlane/defines.h b/ArduPlane/defines.h
+index 18abbb4..0c5574d 100644
+--- a/ArduPlane/defines.h
++++ b/ArduPlane/defines.h
+@@ -241,17 +241,20 @@ enum log_messages {
+ #define CONFIG_INS_MPU6000 2
+ #define CONFIG_INS_STUB    3
+ #define CONFIG_INS_PX4     4
++#define CONFIG_INS_NAVSTIK 5
+ 
+ // barometer driver types
+ #define AP_BARO_BMP085   1
+ #define AP_BARO_MS5611   2
+ #define AP_BARO_PX4      3
+ #define AP_BARO_HIL      4
++#define AP_BARO_NAVSTIK  5
+ 
+ // compass driver types
+ #define AP_COMPASS_HMC5843   1
+ #define AP_COMPASS_PX4       2
+ #define AP_COMPASS_HIL       3
++#define AP_COMPASS_NAVSTIK   4
+ 
+ // altitude control algorithms
+ enum {
+diff --git a/ArduPlane/defines.h.orig b/ArduPlane/defines.h.orig
+new file mode 100644
+index 0000000..18abbb4
+--- /dev/null
++++ b/ArduPlane/defines.h.orig
+@@ -0,0 +1,270 @@
++// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#ifndef _DEFINES_H
++#define _DEFINES_H
++
++// Internal defines, don't edit and expect things to work
++// -------------------------------------------------------
++
++#define TRUE 1
++#define FALSE 0
++#define ToRad(x) radians(x)	// *pi/180
++#define ToDeg(x) degrees(x)	// *180/pi
++
++#define DEBUG 0
++#define LOITER_RANGE 60 // for calculating power outside of loiter radius
++#define SERVO_MAX 4500  // This value represents 45 degrees and is just an
++                        // arbitrary representation of servo max travel.
++
++// failsafe
++// ----------------------
++enum failsafe_state {
++    FAILSAFE_NONE=0,
++    FAILSAFE_SHORT=1,
++    FAILSAFE_LONG=2,
++    FAILSAFE_GCS=3
++};
++
++
++// active altitude sensor
++// ----------------------
++#define SONAR 0
++#define BARO 1
++
++#define PITOT_SOURCE_ADC 1
++#define PITOT_SOURCE_ANALOG_PIN 2
++
++#define T6 1000000
++#define T7 10000000
++
++// GPS type codes - use the names, not the numbers
++#define GPS_PROTOCOL_NONE       -1
++#define GPS_PROTOCOL_NMEA       0
++#define GPS_PROTOCOL_SIRF       1
++#define GPS_PROTOCOL_UBLOX      2
++#define GPS_PROTOCOL_IMU        3
++#define GPS_PROTOCOL_MTK        4
++#define GPS_PROTOCOL_HIL        5
++#define GPS_PROTOCOL_MTK19      6
++#define GPS_PROTOCOL_AUTO       7
++
++// HIL enumerations. Note that HIL_MODE_ATTITUDE and HIL_MODE_SENSORS
++// are now the same thing, and are sensors based. The old define is
++// kept to allow old APM_Config.h headers to keep working
++#define HIL_MODE_DISABLED                       0
++#define HIL_MODE_ATTITUDE                       1
++#define HIL_MODE_SENSORS                        2
++
++enum FlightMode {
++    MANUAL        = 0,
++    CIRCLE        = 1,
++    STABILIZE     = 2,
++    TRAINING      = 3,
++    ACRO          = 4,
++    FLY_BY_WIRE_A = 5,
++    FLY_BY_WIRE_B = 6,
++    CRUISE        = 7,
++    AUTO          = 10,
++    RTL           = 11,
++    LOITER        = 12,
++    GUIDED        = 15,
++    INITIALISING  = 16
++};
++
++// type of stick mixing enabled
++enum StickMixing {
++    STICK_MIXING_DISABLED = 0,
++    STICK_MIXING_FBW      = 1,
++    STICK_MIXING_DIRECT   = 2
++};
++
++enum ChannelMixing {
++    MIXING_DISABLED = 0,
++    MIXING_UPUP     = 1,
++    MIXING_UPDN     = 2,
++    MIXING_DNUP     = 3,
++    MIXING_DNDN     = 4
++};
++
++// Commands - Note that APM now uses a subset of the MAVLink protocol
++// commands.  See enum MAV_CMD in the GCS_Mavlink library
++#define CMD_BLANK 0 // there is no command stored in the mem location
++                    // requested
++#define NO_COMMAND 0
++#define WAIT_COMMAND 255
++
++// Command/Waypoint/Location Options Bitmask
++//--------------------
++#define MASK_OPTIONS_RELATIVE_ALT       (1<<0)          // 1 = Relative
++                                                        // altitude
++#define MASK_OPTIONS_LOITER_DIRECTION   (1<<2)          // 0 = CW
++                                                        // 1 = CCW
++
++
++//repeating events
++#define NO_REPEAT 0
++#define CH_5_TOGGLE 1
++#define CH_6_TOGGLE 2
++#define CH_7_TOGGLE 3
++#define CH_8_TOGGLE 4
++#define RELAY_TOGGLE 5
++#define STOP_REPEAT 10
++
++//  GCS Message ID's
++/// NOTE: to ensure we never block on sending MAVLink messages
++/// please keep each MSG_ to a single MAVLink message. If need be
++/// create new MSG_ IDs for additional messages on the same
++/// stream
++enum ap_message {
++    MSG_HEARTBEAT,
++    MSG_ATTITUDE,
++    MSG_LOCATION,
++    MSG_EXTENDED_STATUS1,
++    MSG_EXTENDED_STATUS2,
++    MSG_NAV_CONTROLLER_OUTPUT,
++    MSG_CURRENT_WAYPOINT,
++    MSG_VFR_HUD,
++    MSG_RADIO_OUT,
++    MSG_RADIO_IN,
++    MSG_RAW_IMU1,
++    MSG_RAW_IMU2,
++    MSG_RAW_IMU3,
++    MSG_GPS_RAW,
++    MSG_SERVO_OUT,
++    MSG_NEXT_WAYPOINT,
++    MSG_NEXT_PARAM,
++    MSG_STATUSTEXT,
++    MSG_FENCE_STATUS,
++    MSG_AHRS,
++    MSG_SIMSTATE,
++    MSG_HWSTATUS,
++    MSG_WIND,
++    MSG_RETRY_DEFERRED // this must be last
++};
++
++// Logging message types. NOTE: If you change the value of one
++// of these then existing logs will break! Only add at the end, and 
++// mark unused ones as 'deprecated', but leave them in
++enum log_messages {
++    LOG_INDEX_MSG,
++    LOG_CTUN_MSG,
++    LOG_NTUN_MSG,
++    LOG_PERFORMANCE_MSG,
++    LOG_CMD_MSG,
++    LOG_CURRENT_MSG,
++    LOG_STARTUP_MSG,
++    TYPE_AIRSTART_MSG,
++    TYPE_GROUNDSTART_MSG,
++    LOG_CAMERA_MSG,
++    LOG_ATTITUDE_MSG,
++    LOG_MODE_MSG,
++    LOG_COMPASS_MSG,
++    LOG_TECS_MSG,
++    MAX_NUM_LOGS // always at the end
++};
++
++#define MASK_LOG_ATTITUDE_FAST          (1<<0)
++#define MASK_LOG_ATTITUDE_MED           (1<<1)
++#define MASK_LOG_GPS                    (1<<2)
++#define MASK_LOG_PM                     (1<<3)
++#define MASK_LOG_CTUN                   (1<<4)
++#define MASK_LOG_NTUN                   (1<<5)
++#define MASK_LOG_MODE                   (1<<6)
++#define MASK_LOG_IMU                    (1<<7)
++#define MASK_LOG_CMD                    (1<<8)
++#define MASK_LOG_CURRENT                (1<<9)
++#define MASK_LOG_COMPASS                (1<<10)
++#define MASK_LOG_TECS                   (1<<11)
++#define MASK_LOG_CAMERA                 (1<<12)
++
++// Waypoint Modes
++// ----------------
++#define ABS_WP 0
++#define REL_WP 1
++
++// Command Queues
++// ---------------
++#define COMMAND_MUST 0
++#define COMMAND_MAY 1
++#define COMMAND_NOW 2
++
++// Events
++// ------
++#define EVENT_WILL_REACH_WAYPOINT 1
++#define EVENT_SET_NEW_COMMAND_INDEX 2
++#define EVENT_LOADED_WAYPOINT 3
++#define EVENT_LOOP 4
++
++// Climb rate calculations
++#define ALTITUDE_HISTORY_LENGTH 8       //Number of (time,altitude) points to
++                                        // regress a climb rate from
++
++
++#define BATTERY_VOLTAGE(x) (x->voltage_average()*g.volt_div_ratio)
++#define CURRENT_AMPS(x) (x->voltage_average()-g.curr_amp_offset)*g.curr_amp_per_volt
++
++#define AN4                     4
++#define AN5                     5
++
++#define SPEEDFILT 400                   // centimeters/second; the speed below
++                                        // which a groundstart will be
++                                        // triggered
++
++
++// EEPROM addresses
++#define EEPROM_MAX_ADDR         4096
++// parameters get the first 1280 bytes of EEPROM, remainder is for waypoints
++#define WP_START_BYTE 0x500 // where in memory home WP is stored + all other
++                            // WP
++#define WP_SIZE 15
++
++// fence points are stored at the end of the EEPROM
++#define MAX_FENCEPOINTS 20
++#define FENCE_WP_SIZE sizeof(Vector2l)
++#define FENCE_START_BYTE (EEPROM_MAX_ADDR-(MAX_FENCEPOINTS*FENCE_WP_SIZE))
++
++#define MAX_WAYPOINTS  ((FENCE_START_BYTE - WP_START_BYTE) / WP_SIZE) - 1 // -
++                                                                          // 1
++                                                                          // to
++                                                                          // be
++                                                                          // safe
++
++// convert a boolean (0 or 1) to a sign for multiplying (0 maps to 1, 1 maps
++// to -1)
++#define BOOL_TO_SIGN(bvalue) ((bvalue) ? -1 : 1)
++
++// mark a function as not to be inlined
++#define NOINLINE __attribute__((noinline))
++
++// InertialSensor driver types
++#define CONFIG_INS_OILPAN  1
++#define CONFIG_INS_MPU6000 2
++#define CONFIG_INS_STUB    3
++#define CONFIG_INS_PX4     4
++
++// barometer driver types
++#define AP_BARO_BMP085   1
++#define AP_BARO_MS5611   2
++#define AP_BARO_PX4      3
++#define AP_BARO_HIL      4
++
++// compass driver types
++#define AP_COMPASS_HMC5843   1
++#define AP_COMPASS_PX4       2
++#define AP_COMPASS_HIL       3
++
++// altitude control algorithms
++enum {
++    ALT_CONTROL_DEFAULT      = 0,
++    ALT_CONTROL_NON_AIRSPEED = 1,
++    ALT_CONTROL_TECS         = 2,
++    ALT_CONTROL_AIRSPEED     = 3
++};
++
++// attitude controller choice
++enum {
++    ATT_CONTROL_PID = 0,
++    ATT_CONTROL_APMCONTROL = 1
++};
++
++#endif // _DEFINES_H
+diff --git a/libraries/AP_Baro/AP_Baro_Navstik.cpp b/libraries/AP_Baro/AP_Baro_Navstik.cpp
+new file mode 100644
+index 0000000..20f618b
+--- /dev/null
++++ b/libraries/AP_Baro/AP_Baro_Navstik.cpp
+@@ -0,0 +1,121 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include <AP_Baro.h>
++#include "AP_Baro_Navstik.h"
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include <drivers/drv_baro.h>
++#include <uORB/uORB.h>
++#include <uORB/topics/sensor_combined.h>
++
++extern const AP_HAL::HAL& hal;
++
++float AP_Baro_Navstik::_pressure_sum;
++float AP_Baro_Navstik::_temperature_sum;
++uint32_t AP_Baro_Navstik::_sum_count;
++uint32_t AP_Baro_Navstik::_last_timer;
++uint64_t AP_Baro_Navstik::_last_timestamp;
++volatile bool AP_Baro_Navstik::_in_accumulate;
++int AP_Baro_Navstik::_baro_fd;
++
++// Public Methods //////////////////////////////////////////////////////////////
++bool AP_Baro_Navstik::init(void)
++{
++    if (_baro_fd <= 0) {
++        _baro_fd = open(BARO_DEVICE_PATH, O_RDONLY);
++        if (_baro_fd < 0) {
++            hal.scheduler->panic("Unable to open " BARO_DEVICE_PATH);
++        }
++
++        /* set the driver to poll at 150Hz */
++        ioctl(_baro_fd, SENSORIOCSPOLLRATE, SENSOR_POLLRATE_MAX);
++
++        // average over up to 10 samples
++        ioctl(_baro_fd, SENSORIOCSQUEUEDEPTH, 10);
++
++        hal.scheduler->register_timer_process(_baro_timer);
++    }
++
++    return true;
++}
++
++// Read the sensor
++uint8_t AP_Baro_Navstik::read(void)
++{
++    accumulate();
++    if (_sum_count == 0) {
++        // no data available
++        return 0;
++    }
++
++    _pressure    = (_pressure_sum / _sum_count) * 100.0f;
++    _temperature = (_temperature_sum / _sum_count) * 10.0f;
++    _pressure_samples = _sum_count;
++    _last_update = (uint32_t)_last_timestamp/1000;
++    _pressure_sum = 0;
++    _temperature_sum = 0;
++    _sum_count = 0;
++
++    healthy = true;
++    return 1;
++}
++
++// accumulate sensor values
++void AP_Baro_Navstik::_accumulate(void)
++{
++    struct baro_report baro_report;
++    if (_in_accumulate) {
++        return;
++    }
++    _in_accumulate = true;
++
++    while (::read(_baro_fd, &baro_report, sizeof(baro_report)) == sizeof(baro_report) &&
++           baro_report.timestamp != _last_timestamp) {
++		_pressure_sum += baro_report.pressure; // Pressure in mbar
++		_temperature_sum += baro_report.temperature; // degrees celcius
++        _sum_count++;
++        _last_timestamp = baro_report.timestamp;
++    }
++    _in_accumulate = false;
++}
++
++// accumulate sensor values
++void AP_Baro_Navstik::accumulate(void)
++{
++    _accumulate();
++}
++
++void AP_Baro_Navstik::_baro_timer(uint32_t now)
++{
++    // accumulate samples at 100Hz
++    if (now - _last_timer > 10000) {
++        return;
++    }
++    _last_timer = hal.scheduler->micros();
++    _accumulate();
++}
++
++float AP_Baro_Navstik::get_pressure() {
++    return _pressure;
++}
++
++float AP_Baro_Navstik::get_temperature() {
++    return _temperature;
++}
++
++int32_t AP_Baro_Navstik::get_raw_pressure() {
++    return _pressure;
++}
++
++int32_t AP_Baro_Navstik::get_raw_temp() {
++    return _temperature;
++}
++
++#endif // CONFIG_HAL_BOARD
+diff --git a/libraries/AP_Baro/AP_Baro_Navstik.h b/libraries/AP_Baro/AP_Baro_Navstik.h
+new file mode 100644
+index 0000000..671009d
+--- /dev/null
++++ b/libraries/AP_Baro/AP_Baro_Navstik.h
+@@ -0,0 +1,34 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#ifndef __AP_BARO_NAVSTIK_H__
++#define __AP_BARO_NAVSTIK_H__
++
++#include "AP_Baro.h"
++
++class AP_Baro_Navstik : public AP_Baro
++{
++public:
++    bool init();
++    uint8_t read();
++    float get_pressure();
++    float get_temperature();
++    int32_t get_raw_pressure();
++    int32_t get_raw_temp();
++    void accumulate(void);
++
++private:
++    float _temperature;
++    float _pressure;
++    static float _pressure_sum;
++    static float _temperature_sum;
++    static uint32_t _sum_count;
++    static volatile bool _in_accumulate;
++    static void _accumulate(void);
++    static void _baro_timer(uint32_t now);
++    static uint64_t _last_timestamp;
++    // baro driver handle
++    static int _baro_fd;
++    static uint32_t _last_timer;
++};
++
++#endif //  __AP_BARO_NAVSTIK_H__
+diff --git a/libraries/AP_Common/AP_Common.h b/libraries/AP_Common/AP_Common.h
+index d161bfa..bf30efd 100644
+--- a/libraries/AP_Common/AP_Common.h
++++ b/libraries/AP_Common/AP_Common.h
+@@ -104,6 +104,7 @@ struct Location {
+ #define AP_PRODUCT_ID_APM1_2560         0x02    // APM1 with 2560 CPUs
+ #define AP_PRODUCT_ID_SITL              0x03    // Software in the loop
+ #define AP_PRODUCT_ID_PX4               0x04    // PX4 on NuttX
++#define AP_PRODUCT_ID_NAVSTIK           0x05    // Navstik on NuttX
+ #define AP_PRODUCT_ID_APM2ES_REV_C4 0x14        // APM2 with MPU6000ES_REV_C4
+ #define AP_PRODUCT_ID_APM2ES_REV_C5     0x15    // APM2 with MPU6000ES_REV_C5
+ #define AP_PRODUCT_ID_APM2ES_REV_D6     0x16    // APM2 with MPU6000ES_REV_D6
+diff --git a/libraries/AP_Compass/AP_Compass_Navstik.cpp b/libraries/AP_Compass/AP_Compass_Navstik.cpp
+new file mode 100644
+index 0000000..86a2321
+--- /dev/null
++++ b/libraries/AP_Compass/AP_Compass_Navstik.cpp
+@@ -0,0 +1,94 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++/*
++ *       AP_Compass_Navstik.cpp - Arduino Library for Navstik magnetometer
++ *
++ *       This library is free software; you can redistribute it and / or
++ *       modify it under the terms of the GNU Lesser General Public
++ *       License as published by the Free Software Foundation; either
++ *       version 2.1 of the License, or (at your option) any later version.
++ */
++
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "AP_Compass_Navstik.h"
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include <drivers/drv_mag.h>
++#include <stdio.h>
++#include <errno.h>
++
++extern const AP_HAL::HAL& hal;
++
++// Public Methods //////////////////////////////////////////////////////////////
++
++bool AP_Compass_Navstik::init(void)
++{
++	_mag_fd = open(MAG_DEVICE_PATH, O_RDONLY);
++	if (_mag_fd < 0) {
++        hal.console->printf("Unable to open " MAG_DEVICE_PATH);
++        return false;
++	}
++
++	/* set the mag internal poll rate to at least 150Hz */
++	ioctl(_mag_fd, MAGIOCSSAMPLERATE, 150);
++
++	/* set the driver to poll at 150Hz */
++	ioctl(_mag_fd, SENSORIOCSPOLLRATE, 150);
++
++    // average over up to 10 samples
++    ioctl(_mag_fd, SENSORIOCSQUEUEDEPTH, 10);
++
++    healthy = false;
++    _count = 0;
++    _sum.zero();
++
++    return true;
++}
++
++bool AP_Compass_Navstik::read(void)
++{
++    accumulate();
++    while (_count == 0) {
++        accumulate();
++        if (_count == 0) {
++            hal.scheduler->delay(1);
++        }
++    }
++
++    _sum /= _count;
++    _sum *= 1000;
++    _sum.rotate((enum Rotation)_orientation.get());
++    _sum.rotate(_board_orientation);
++    _sum += _offset.get();
++
++    mag_x = _sum.x;
++    mag_y = _sum.y;
++    mag_z = _sum.z;
++
++    _sum.zero();
++    _count = 0;
++
++    last_update = _last_timestamp;
++
++    return true;
++}
++
++void AP_Compass_Navstik::accumulate(void)
++{
++    struct mag_report mag_report;
++    while (::read(_mag_fd, &mag_report, sizeof(mag_report)) == sizeof(mag_report) &&
++           mag_report.timestamp != _last_timestamp) {
++        _sum += Vector3f(mag_report.x, mag_report.y, mag_report.z);
++        _count++;
++        _last_timestamp = mag_report.timestamp;
++        healthy = true;
++    }
++}
++
++#endif // CONFIG_HAL_BOARD
+diff --git a/libraries/AP_Compass/AP_Compass_Navstik.h b/libraries/AP_Compass/AP_Compass_Navstik.h
+new file mode 100644
+index 0000000..febcd7e
+--- /dev/null
++++ b/libraries/AP_Compass/AP_Compass_Navstik.h
+@@ -0,0 +1,26 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#ifndef AP_Compass_NAVSTIK_H
++#define AP_Compass_NAVSTIK_H
++
++#include "Compass.h"
++
++class AP_Compass_Navstik : public Compass
++{
++public:
++    AP_Compass_Navstik() : Compass() {
++        product_id = AP_COMPASS_TYPE_NAVSTIK;
++    }
++    bool        init(void);
++    bool        read(void);
++    void        accumulate(void);
++
++private:
++    int _mag_fd;
++    Vector3f _sum;
++    uint32_t _count;
++    uint64_t _last_timestamp;
++};
++
++#endif // AP_Compass_NAVSTIK_H
++
+diff --git a/libraries/AP_Compass/Compass.h b/libraries/AP_Compass/Compass.h
+index 86cff6f..2e97c28 100644
+--- a/libraries/AP_Compass/Compass.h
++++ b/libraries/AP_Compass/Compass.h
+@@ -14,6 +14,7 @@
+ #define AP_COMPASS_TYPE_HMC5843  0x02
+ #define AP_COMPASS_TYPE_HMC5883L 0x03
+ #define AP_COMPASS_TYPE_PX4      0x04
++#define AP_COMPASS_TYPE_NAVSTIK  0x05
+ 
+ // motor compensation types (for use with motor_comp_enabled)
+ #define AP_COMPASS_MOT_COMP_DISABLED    0x00
+diff --git a/libraries/AP_HAL/AP_HAL_Boards.h b/libraries/AP_HAL/AP_HAL_Boards.h
+index 241433c..fd21b4b 100644
+--- a/libraries/AP_HAL/AP_HAL_Boards.h
++++ b/libraries/AP_HAL/AP_HAL_Boards.h
+@@ -37,6 +37,9 @@
+ #elif CONFIG_HAL_BOARD == HAL_BOARD_SMACCM
+ #define AP_HAL_BOARD_DRIVER AP_HAL_SMACCM
+ #define HAL_BOARD_NAME "SMACCM"
++#elif CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#define AP_HAL_BOARD_DRIVER AP_HAL_NAVSTIK
++#define HAL_BOARD_NAME "NAVSTIK"
+ #elif CONFIG_HAL_BOARD == HAL_BOARD_EMPTY
+ #define AP_HAL_BOARD_DRIVER AP_HAL_Empty
+ #define HAL_BOARD_NAME "EMPTY"
+diff --git a/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK.h b/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK.h
+new file mode 100644
+index 0000000..0487bb8
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK.h
+@@ -0,0 +1,10 @@
++
++#ifndef __AP_HAL_NAVSTIK_H__
++#define __AP_HAL_NAVSTIK_H__
++
++#include <AP_HAL.h>
++#include "HAL_NAVSTIK_Class.h"
++#include "AP_HAL_NAVSTIK_Main.h"
++
++#endif // __AP_HAL_NAVSTIK_H__
++
+diff --git a/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK_Main.h b/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK_Main.h
+new file mode 100644
+index 0000000..2ae7287
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK_Main.h
+@@ -0,0 +1,14 @@
++#ifndef __AP_HAL_NAVSTIK_MAIN_H__
++#define __AP_HAL_NAVSTIK_MAIN_H__
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
++#define AP_HAL_MAIN() \
++    extern "C" __EXPORT int SKETCH_MAIN(int argc, char * const argv[]); \
++    int SKETCH_MAIN(int argc, char * const argv[]) {	\
++	hal.init(argc, argv); \
++	return OK; \
++    }
++
++#endif
++#endif // __AP_HAL_NAVSTIK_MAIN_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK_Namespace.h b/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK_Namespace.h
+new file mode 100644
+index 0000000..513ed67
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/AP_HAL_NAVSTIK_Namespace.h
+@@ -0,0 +1,18 @@
++
++#ifndef __AP_HAL_NAVSTIK_NAMESPACE_H__
++#define __AP_HAL_NAVSTIK_NAMESPACE_H__
++
++namespace Navstik {
++	class NavstikConsoleDriver;
++	class NavstikScheduler;
++	class NavstikUARTDriver;
++	class NavstikStorage;
++	class NavstikRCInput;
++	class NavstikRCOutput;
++	class NavstikAnalogIn;
++	class NavstikAnalogSource;
++	class NavstikUtil;
++}
++
++#endif //__AP_HAL_NAVSTIK_NAMESPACE_H__
++
+diff --git a/libraries/AP_HAL_NAVSTIK/AnalogIn.cpp b/libraries/AP_HAL_NAVSTIK/AnalogIn.cpp
+new file mode 100644
+index 0000000..29d3c84
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/AnalogIn.cpp
+@@ -0,0 +1,131 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "AnalogIn.h"
++#include <drivers/drv_adc.h>
++#include <stdio.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <nuttx/analog/adc.h>
++
++#define ANLOGIN_DEBUGGING 0
++
++#if ANLOGIN_DEBUGGING
++ # define Debug(fmt, args ...)  do {printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ## args); } while(0)
++#else
++ # define Debug(fmt, args ...)
++#endif
++
++extern const AP_HAL::HAL& hal;
++
++using namespace Navstik;
++
++int NavstikAnalogIn::_adc_fd;
++uint32_t NavstikAnalogIn::_last_run;
++NavstikAnalogSource* NavstikAnalogIn::_channels[NAVSTIK_ANALOG_MAX_CHANNELS] = {};
++
++NavstikAnalogSource::NavstikAnalogSource(int16_t pin, float initial_value, float scale) :
++	_pin(pin),
++    _value(initial_value),
++    _latest_value(initial_value),
++    _sum_count(0),
++    _sum_value(0),
++    _scale(scale)
++{}
++
++float NavstikAnalogSource::read_average() 
++{
++    if (_sum_count == 0) {
++        return _value;
++    }
++    hal.scheduler->suspend_timer_procs();
++    _value = _sum_value / _sum_count;
++    _sum_value = 0;
++    _sum_count = 0;
++    hal.scheduler->resume_timer_procs();
++    return _value;
++}
++
++float NavstikAnalogSource::read_latest() 
++{
++    return _latest_value;
++}
++
++void NavstikAnalogSource::set_pin(uint8_t pin)
++{
++    _pin = pin;
++}
++
++
++NavstikAnalogIn::NavstikAnalogIn()
++{}
++
++void NavstikAnalogIn::init(void* machtnichts)
++{
++	_adc_fd = open(ADC_DEVICE_PATH, O_RDONLY | O_NONBLOCK);
++    if (_adc_fd == -1) {
++        hal.scheduler->panic("Unable to open " ADC_DEVICE_PATH);
++	}
++    hal.scheduler->register_timer_process(_analogin_timer);
++}
++
++/*
++  called at 1kHz
++ */
++void NavstikAnalogIn::_analogin_timer(uint32_t now)
++{
++    // read adc at 100Hz
++    uint32_t delta_t = now - _last_run;
++    if (delta_t < 10000) {
++        return;
++    }
++    _last_run = now;
++
++    struct adc_msg_s buf_adc[8];
++
++    /* read all channels available */
++    int ret = read(_adc_fd, &buf_adc, sizeof(buf_adc));
++    if (ret == -1) return;
++
++    // match the incoming channels to the currently active pins
++    for (uint8_t i=0; i<ret/sizeof(buf_adc[0]); i++) {
++        Debug("chan %u value=%u\n",
++              (unsigned)buf_adc[i].am_channel,
++              (unsigned)buf_adc[i].am_data);
++        for (uint8_t j=0; j<NAVSTIK_ANALOG_MAX_CHANNELS; j++) {
++            Navstik::NavstikAnalogSource *c = _channels[j];
++            if (c != NULL && buf_adc[i].am_channel == c->_pin) {
++                c->_latest_value = buf_adc[i].am_data;
++                c->_sum_value += c->_latest_value;
++                c->_sum_count++;
++                if (c->_sum_count == 254) {
++                    c->_sum_value /= 2;
++                    c->_sum_count /= 2;
++                }
++            }
++        }
++    }
++}
++
++AP_HAL::AnalogSource* NavstikAnalogIn::channel(int16_t pin) 
++{
++    return channel(pin, 1.0);
++}
++
++AP_HAL::AnalogSource* NavstikAnalogIn::channel(int16_t pin, float scale) 
++{
++    for (uint8_t j=0; j<NAVSTIK_ANALOG_MAX_CHANNELS; j++) {
++        if (_channels[j] == NULL) {
++            _channels[j] = new NavstikAnalogSource(pin, 0.0, scale);
++            return _channels[j];
++        }
++    }
++    hal.console->println("Out of analog channels");
++    return NULL;
++}
++
++#endif // CONFIG_HAL_BOARD
+diff --git a/libraries/AP_HAL_NAVSTIK/AnalogIn.h b/libraries/AP_HAL_NAVSTIK/AnalogIn.h
+new file mode 100644
+index 0000000..08855f2
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/AnalogIn.h
+@@ -0,0 +1,49 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#ifndef __AP_HAL_NAVSTIK_ANALOGIN_H__
++#define __AP_HAL_NAVSTIK_ANALOGIN_H__
++
++#include <AP_HAL_NAVSTIK.h>
++#include <pthread.h>
++
++#define NAVSTIK_ANALOG_MAX_CHANNELS 8
++
++class Navstik::NavstikAnalogSource : public AP_HAL::AnalogSource {
++public:
++    friend class Navstik::NavstikAnalogIn;
++    NavstikAnalogSource(int16_t pin, float initial_value, float scale);
++    float read_average();
++    float read_latest();
++    void set_pin(uint8_t p);
++    float voltage_average();
++    float voltage_average_ratiometric() { return voltage_average(); }
++
++    void set_stop_pin(uint8_t p) {}
++    void set_settle_time(uint16_t settle_time_ms) {}
++
++private:
++    // what pin it is attached to
++    int16_t _pin;
++
++    // what value it has
++    float _value;
++    float _latest_value;
++    uint8_t _sum_count;
++    float _sum_value;
++    float _scale;
++};
++
++class Navstik::NavstikAnalogIn : public AP_HAL::AnalogIn {
++public:
++    NavstikAnalogIn();
++    void init(void* implspecific);
++    AP_HAL::AnalogSource* channel(int16_t pin);
++    AP_HAL::AnalogSource* channel(int16_t pin, float scale);
++
++private:
++    static int _adc_fd;
++    static Navstik::NavstikAnalogSource* _channels[NAVSTIK_ANALOG_MAX_CHANNELS];
++    static void _analogin_timer(uint32_t now);
++    static uint32_t _last_run;
++};
++#endif // __AP_HAL_NAVSTIK_ANALOGIN_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/Console.cpp b/libraries/AP_HAL_NAVSTIK/Console.cpp
+new file mode 100644
+index 0000000..5b18be0
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Console.cpp
+@@ -0,0 +1,78 @@
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include <stdarg.h>
++#include "Console.h"
++#include "UARTDriver.h"
++#include <stdio.h>
++
++using namespace Navstik;
++
++NavstikConsoleDriver::NavstikConsoleDriver() {}
++
++void NavstikConsoleDriver::init(void* uart)
++{
++	_uart = (NavstikUARTDriver *)uart;
++}
++
++void NavstikConsoleDriver::backend_open()
++{}
++
++void NavstikConsoleDriver::backend_close()
++{}
++
++size_t NavstikConsoleDriver::backend_read(uint8_t *data, size_t len) {
++    return 0;
++}
++
++size_t NavstikConsoleDriver::backend_write(const uint8_t *data, size_t len) {
++    return 0;
++}
++
++void NavstikConsoleDriver::print_P(const prog_char_t *pstr) {
++	print(pstr);
++}
++
++void NavstikConsoleDriver::println_P(const prog_char_t *pstr) {
++	println(pstr);
++}
++
++void NavstikConsoleDriver::printf(const char *fmt, ...) {
++    va_list ap;
++    va_start(ap, fmt);
++    _uart->vprintf(fmt, ap);
++    va_end(ap);
++}
++
++void NavstikConsoleDriver::_printf_P(const prog_char *fmt, ...) {
++    va_list ap;
++    va_start(ap, fmt);
++    _uart->vprintf(fmt, ap);
++    va_end(ap);
++}
++
++void NavstikConsoleDriver::vprintf(const char *fmt, va_list ap) {
++	_uart->vprintf(fmt, ap);
++}
++
++void NavstikConsoleDriver::vprintf_P(const prog_char *fmt, va_list ap) {
++	_uart->vprintf(fmt, ap);
++}
++
++int16_t NavstikConsoleDriver::available() {
++	return _uart->available();
++}
++
++int16_t NavstikConsoleDriver::txspace() {
++	return _uart->txspace();
++}
++
++int16_t NavstikConsoleDriver::read() {
++	return _uart->read();
++}
++
++size_t NavstikConsoleDriver::write(uint8_t c) {
++	return _uart->write(c);
++}
++
++#endif
+diff --git a/libraries/AP_HAL_NAVSTIK/Console.h b/libraries/AP_HAL_NAVSTIK/Console.h
+new file mode 100644
+index 0000000..faea3a7
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Console.h
+@@ -0,0 +1,34 @@
++
++#ifndef __AP_HAL_NAVSTIK_CONSOLE_H__
++#define __AP_HAL_NAVSTIK_CONSOLE_H__
++
++#include <AP_HAL_NAVSTIK.h>
++#include <AP_HAL_NAVSTIK_Namespace.h>
++
++class Navstik::NavstikConsoleDriver : public AP_HAL::ConsoleDriver {
++public:
++    NavstikConsoleDriver();
++    void init(void* machtnichts);
++    void backend_open();
++    void backend_close();
++    size_t backend_read(uint8_t *data, size_t len);
++    size_t backend_write(const uint8_t *data, size_t len);
++
++    void print_P(const prog_char_t *pstr);
++    void println_P(const prog_char_t *pstr);
++    void printf(const char *pstr, ...);
++    void _printf_P(const prog_char *pstr, ...);
++    void vprintf(const char *pstr, va_list ap);
++    void vprintf_P(const prog_char *pstr, va_list ap);
++
++    int16_t available();
++    int16_t txspace();
++    int16_t read();
++
++    size_t write(uint8_t c);
++
++private:
++    NavstikUARTDriver *_uart;
++};
++
++#endif // __AP_HAL_NAVSTIK_CONSOLE_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/HAL_NAVSTIK_Class.cpp b/libraries/AP_HAL_NAVSTIK/HAL_NAVSTIK_Class.cpp
+new file mode 100644
+index 0000000..620e4d4
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/HAL_NAVSTIK_Class.cpp
+@@ -0,0 +1,267 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
++#include <AP_HAL_NAVSTIK.h>
++#include "AP_HAL_NAVSTIK_Namespace.h"
++#include "HAL_NAVSTIK_Class.h"
++#include "Console.h"
++#include "Scheduler.h"
++#include "UARTDriver.h"
++#include "Storage.h"
++#include "RCInput.h"
++#include "RCOutput.h"
++#include "AnalogIn.h"
++#include "Util.h"
++
++#include <AP_HAL_Empty.h>
++#include <AP_HAL_Empty_Private.h>
++
++#include <stdlib.h>
++#include <systemlib/systemlib.h>
++#include <nuttx/config.h>
++#include <unistd.h>
++#include <stdio.h>
++#include <pthread.h>
++#include <poll.h>
++#include <drivers/drv_hrt.h>
++
++using namespace Navstik;
++
++static Empty::EmptySemaphore  i2cSemaphore;
++static Empty::EmptyI2CDriver  i2cDriver(&i2cSemaphore);
++static Empty::EmptySPIDeviceManager spiDeviceManager;
++static Empty::EmptyGPIO gpioDriver;
++
++static NavstikConsoleDriver consoleDriver;
++static NavstikScheduler schedulerInstance;
++static NavstikStorage storageDriver;
++static NavstikRCInput rcinDriver;
++static NavstikRCOutput rcoutDriver;
++static NavstikAnalogIn analogIn;
++static NavstikUtil utilInstance;
++
++#define UARTA_DEFAULT_DEVICE "/dev/ttyS0"
++#define UARTB_DEFAULT_DEVICE "/dev/ttyS1"
++#define UARTC_DEFAULT_DEVICE "/dev/ttyS2"
++
++// only two real UART drivers for now
++static NavstikUARTDriver uartADriver(UARTA_DEFAULT_DEVICE, "APM_uartA");
++static NavstikUARTDriver uartBDriver(UARTB_DEFAULT_DEVICE, "APM_uartB");
++static NavstikUARTDriver uartCDriver(UARTC_DEFAULT_DEVICE, "APM_uartC");
++//static Empty::EmptyUARTDriver uartCDriver;
++
++HAL_Navstik::HAL_Navstik() :
++    AP_HAL::HAL(
++	    &uartADriver,  /* uartA */
++	    &uartBDriver,  /* uartB */
++	    &uartCDriver,  /* uartC */
++        &i2cDriver, /* i2c */
++        &spiDeviceManager, /* spi */
++        &analogIn, /* analogin */
++        &storageDriver, /* storage */
++        &consoleDriver, /* console */
++        &gpioDriver, /* gpio */
++        &rcinDriver,  /* rcinput */
++        &rcoutDriver, /* rcoutput */
++        &schedulerInstance, /* scheduler */
++        &utilInstance) /* util */
++{}
++
++bool _navstik_thread_should_exit = false;		/**< Daemon exit flag */
++static bool thread_running = false;		/**< Daemon status flag */
++static int daemon_task;				/**< Handle of daemon task / thread */
++static bool ran_overtime;
++
++extern const AP_HAL::HAL& hal;
++
++static void semaphore_yield(void *sem)
++{
++    sem_post((sem_t *)sem);
++}
++
++/*
++  set the priority of the main APM task
++ */
++static void set_priority(uint8_t priority)
++{
++    struct sched_param param;
++    param.sched_priority = priority;
++    sched_setscheduler(daemon_task, SCHED_FIFO, &param);    
++}
++
++/*
++  this is called when loop() takes more than 1 second to run. If that
++  happens then something is blocking for a long time in the main
++  sketch - probably waiting on a low priority driver. Set the priority
++  of the APM task low to let the driver run.
++ */
++static void loop_overtime(void *)
++{
++    set_priority(APM_OVERTIME_PRIORITY);
++    ran_overtime = true;
++}
++
++static int main_loop(int argc, char **argv)
++{
++    extern void setup(void);
++    extern void loop(void);
++
++
++    hal.uartA->begin(115200);
++    hal.uartB->begin(9600);
++    hal.uartC->begin(115200);
++    hal.console->init((void*) hal.uartA);
++    hal.scheduler->init(NULL);
++    hal.rcin->init(NULL);
++    hal.rcout->init(NULL);
++    hal.analogin->init(NULL);
++
++    /*
++      run setup() at low priority to ensure CLI doesn't hang the
++      system, and to allow initial sensor read loops to run
++     */
++    set_priority(APM_STARTUP_PRIORITY);
++
++    setup();
++    hal.scheduler->system_initialized();
++
++    perf_counter_t perf_loop = perf_alloc(PC_ELAPSED, "APM_loop");
++    perf_counter_t perf_overrun = perf_alloc(PC_COUNT, "APM_overrun");
++    sem_t loop_semaphore;
++    struct hrt_call loop_call;
++    struct hrt_call loop_overtime_call;
++
++    sem_init(&loop_semaphore, 0, 0);
++             
++    thread_running = true;
++
++    /*
++      switch to high priority for main loop
++     */
++    set_priority(APM_MAIN_PRIORITY);
++
++    while (!_navstik_thread_should_exit) {
++        perf_begin(perf_loop);
++        
++        /*
++          this ensures a tight loop waiting on a lower priority driver
++          will eventually give up some time for the driver to run. It
++          will only ever be called if a loop() call runs for more than
++          1 second
++         */
++        hrt_call_after(&loop_overtime_call, 1000000, (hrt_callout)loop_overtime, NULL);
++
++		loop();
++
++        if (ran_overtime) {
++            /*
++              we ran over 1s in loop(), and our priority was lowered
++              to let a driver run. Set it back to high priority now.
++             */
++            set_priority(APM_MAIN_PRIORITY);
++            perf_count(perf_overrun);
++            ran_overtime = false;
++        }
++
++        perf_end(perf_loop);
++
++        if (hal.scheduler->in_timerprocess()) {
++            // we are running when a timer process is running! This is
++            // a scheduling error, and breaks the assumptions made in
++            // our locking system
++            ::printf("ERROR: timer processing running in loop()\n");
++        }
++
++        /*
++          give up 500 microseconds of time, to ensure drivers get a
++          chance to run. This gives us better timing performance than
++          a poll(NULL, 0, 1)
++         */
++        hrt_call_after(&loop_call, 500, (hrt_callout)semaphore_yield, &loop_semaphore);
++        sem_wait(&loop_semaphore);
++	}
++    thread_running = false;
++    return 0;
++}
++
++static void usage(void)
++{
++    printf("Usage: %s [options] {start,stop,status}\n", SKETCHNAME);
++    printf("Options:\n");
++    printf("\t-d DEVICE         set terminal device (default %s)\n", UARTA_DEFAULT_DEVICE);
++    printf("\n");
++}
++
++
++void HAL_Navstik::init(int argc, char * const argv[]) const 
++{
++    int i;
++    const char *deviceA = UARTA_DEFAULT_DEVICE;
++
++    if (argc < 1) {
++		printf("%s: missing command (try '%s start')", 
++               SKETCHNAME, SKETCHNAME);
++        usage();
++        exit(1);
++    }
++
++    for (i=0; i<argc; i++) {
++        if (strcmp(argv[i], "start") == 0) {
++            if (thread_running) {
++                printf("%s already running\n", SKETCHNAME);
++                /* this is not an error */
++                exit(0);
++            }
++
++            uartADriver.set_device_path(deviceA);
++            printf("Starting %s on %s\n", SKETCHNAME, deviceA);
++
++            _navstik_thread_should_exit = false;
++            daemon_task = task_spawn_cmd(SKETCHNAME,
++                                     SCHED_FIFO,
++                                     APM_MAIN_PRIORITY,
++                                     8192,
++                                     main_loop,
++                                     NULL);
++            exit(0);
++        }
++
++        if (strcmp(argv[i], "stop") == 0) {
++            _navstik_thread_should_exit = true;
++            exit(0);
++        }
++ 
++        if (strcmp(argv[i], "status") == 0) {
++            if (_navstik_thread_should_exit && thread_running) {
++                printf("\t%s is exiting\n", SKETCHNAME);
++            } else if (thread_running) {
++                printf("\t%s is running\n", SKETCHNAME);
++            } else {
++                printf("\t%s is not started\n", SKETCHNAME);
++            }
++            exit(0);
++        }
++
++		if (strcmp(argv[i], "-d") == 0) {
++            // set terminal device
++			if (argc > i + 1) {
++                deviceA = strdup(argv[i+1]);
++			} else {
++				printf("missing parameter to -d DEVICE\n");
++                usage();
++                exit(1);
++			}
++		}
++    }
++ 
++    usage();
++	exit(1);
++}
++
++const HAL_Navstik AP_HAL_NAVSTIK;
++
++#endif // CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
+diff --git a/libraries/AP_HAL_NAVSTIK/HAL_NAVSTIK_Class.h b/libraries/AP_HAL_NAVSTIK/HAL_NAVSTIK_Class.h
+new file mode 100644
+index 0000000..19399b0
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/HAL_NAVSTIK_Class.h
+@@ -0,0 +1,23 @@
++
++#ifndef __AP_HAL_NAVSTIK_CLASS_H__
++#define __AP_HAL_NAVSTIK_CLASS_H__
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
++#include <AP_HAL_NAVSTIK.h>
++#include "AP_HAL_NAVSTIK_Namespace.h"
++#include <systemlib/visibility.h>
++#include <systemlib/perf_counter.h>
++
++class HAL_Navstik : public AP_HAL::HAL {
++public:
++    HAL_Navstik();
++    void init(int argc, char * const argv[]) const;
++};
++
++extern const HAL_Navstik AP_HAL_NAVSTIK;
++
++#endif // CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#endif // __AP_HAL_NAVSTIK_CLASS_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/RCInput.cpp b/libraries/AP_HAL_NAVSTIK/RCInput.cpp
+new file mode 100644
+index 0000000..1a87c66
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/RCInput.cpp
+@@ -0,0 +1,87 @@
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "RCInput.h"
++#include <drivers/drv_hrt.h>
++
++using namespace Navstik;
++
++extern const AP_HAL::HAL& hal;
++
++#if CONFIG_HRT_PPM
++extern uint16_t ppm_buffer[];
++extern unsigned ppm_decoded_channels;
++
++extern uint64_t ppm_last_valid_decode;
++#else
++uint16_t ppm_buffer[32];
++unsigned ppm_decoded_channels;
++uint64_t ppm_last_valid_decode;
++#endif
++
++void NavstikRCInput::init(void* unused)
++{
++	clear_overrides();
++}
++
++uint8_t NavstikRCInput::valid_channels() 
++{
++	return _rcin.timestamp != _last_read || _override_valid;
++}
++
++uint16_t NavstikRCInput::read(uint8_t ch) 
++{
++	_last_read = ppm_last_valid_decode;
++	_override_valid = false;
++	if (ch >= NAVSTIK_NUM_RCINPUT_CHANNELS) {
++		return 0;
++	}
++	if (_override[ch]) {
++		return _override[ch];
++	}
++	return ppm_buffer[ch];
++}
++
++uint8_t NavstikRCInput::read(uint16_t* periods, uint8_t len) 
++{
++	if (len > NAVSTIK_NUM_RCINPUT_CHANNELS) {
++		len = NAVSTIK_NUM_RCINPUT_CHANNELS;
++	}
++	for (uint8_t i = 0; i < len; i++){
++		periods[i] = read(i);
++	}
++	return len;
++}
++
++bool NavstikRCInput::set_overrides(int16_t *overrides, uint8_t len) 
++{
++	bool res = false;
++	for (uint8_t i = 0; i < len; i++) {
++		res |= set_override(i, overrides[i]);
++	}
++	return res;
++}
++
++bool NavstikRCInput::set_override(uint8_t channel, int16_t override) {
++	if (override < 0) {
++		return false; /* -1: no change. */
++	}
++	if (channel >= NAVSTIK_NUM_RCINPUT_CHANNELS) {
++		return false;
++	}
++	_override[channel] = override;
++	if (override != 0) {
++		_override_valid = true;
++		return true;
++	}
++	return false;
++}
++
++void NavstikRCInput::clear_overrides()
++{
++	for (uint8_t i = 0; i < NAVSTIK_NUM_RCINPUT_CHANNELS; i++) {
++		set_override(i, 0);
++	}
++}
++
++#endif
+diff --git a/libraries/AP_HAL_NAVSTIK/RCInput.h b/libraries/AP_HAL_NAVSTIK/RCInput.h
+new file mode 100644
+index 0000000..1cb18f9
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/RCInput.h
+@@ -0,0 +1,30 @@
++
++#ifndef __AP_HAL_NAVSTIK_RCINPUT_H__
++#define __AP_HAL_NAVSTIK_RCINPUT_H__
++
++#include <AP_HAL_NAVSTIK.h>
++#include <drivers/drv_rc_input.h>
++#include <systemlib/perf_counter.h>
++
++#define NAVSTIK_NUM_RCINPUT_CHANNELS 8
++
++class Navstik::NavstikRCInput : public AP_HAL::RCInput {
++public:
++    void init(void* machtnichts);
++    uint8_t  valid_channels();
++    uint16_t read(uint8_t ch);
++    uint8_t read(uint16_t* periods, uint8_t len);
++
++    bool set_overrides(int16_t *overrides, uint8_t len);
++    bool set_override(uint8_t channel, int16_t override);
++    void clear_overrides();
++
++private:
++    /* override state */
++    uint16_t _override[NAVSTIK_NUM_RCINPUT_CHANNELS];
++    struct rc_input_values _rcin;
++    uint64_t _last_read;
++    bool _override_valid;
++};
++
++#endif // __AP_HAL_NAVSTIK_RCINPUT_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/RCOutput.cpp b/libraries/AP_HAL_NAVSTIK/RCOutput.cpp
+new file mode 100644
+index 0000000..43e5232
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/RCOutput.cpp
+@@ -0,0 +1,121 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "RCOutput.h"
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include <drivers/drv_pwm_output.h>
++
++extern const AP_HAL::HAL& hal;
++
++using namespace Navstik;
++
++void NavstikRCOutput::init(void* unused) 
++{
++    _perf_rcout = perf_alloc(PC_ELAPSED, "APM_rcout");
++    _pwm_fd = open(PWM_OUTPUT_DEVICE_PATH, O_RDWR);
++    if (_pwm_fd == -1) {
++	hal.scheduler->panic("Unable to open " PWM_OUTPUT_DEVICE_PATH);
++    }
++    ioctl(_pwm_fd, PWM_SERVO_ARM, 0);
++}
++
++void NavstikRCOutput::set_freq(uint32_t chmask, uint16_t freq_hz) 
++{
++    if (freq_hz == _freq_hz) {
++        // avoid the ioctl() if possible
++        return;
++    }
++    // we can't set this per channel yet
++    if (ioctl(_pwm_fd, PWM_SERVO_SET_UPDATE_RATE, (unsigned long)freq_hz) == 0) {
++        _freq_hz = freq_hz;
++    }
++}
++
++uint16_t NavstikRCOutput::get_freq(uint8_t ch) 
++{
++	return _freq_hz;
++}
++
++void NavstikRCOutput::enable_ch(uint8_t ch)
++{
++    // channels are always enabled ...
++}
++
++void NavstikRCOutput::enable_mask(uint32_t chmask)
++{
++    // channels are always enabled ...
++}
++
++void NavstikRCOutput::disable_ch(uint8_t ch)
++{
++    // channels are always enabled ...
++}
++
++void NavstikRCOutput::disable_mask(uint32_t chmask)
++{
++    // channels are always enabled ...
++}
++
++void NavstikRCOutput::write(uint8_t ch, uint16_t period_us)
++{
++    if (ch >= NAVSTIK_NUM_OUTPUT_CHANNELS) {
++        return;
++    }
++    if (ch > _max_channel) {
++        _max_channel = ch;
++    }
++    if (period_us != _period[ch]) {
++        _period[ch] = period_us;
++        _need_update = true;
++    }
++}
++
++void NavstikRCOutput::write(uint8_t ch, uint16_t* period_us, uint8_t len)
++{
++    for (uint8_t i=0; i<len; i++) {
++        write(i, period_us[i]);
++    }
++}
++
++uint16_t NavstikRCOutput::read(uint8_t ch) 
++{
++    if (ch >= NAVSTIK_NUM_OUTPUT_CHANNELS) {
++        return 0;
++    }
++    return _period[ch];
++}
++
++void NavstikRCOutput::read(uint16_t* period_us, uint8_t len)
++{
++    for (uint8_t i=0; i<len; i++) {
++        period_us[i] = read(i);
++    }
++}
++
++void NavstikRCOutput::_timer_tick(void)
++{
++    uint32_t now = hal.scheduler->micros();
++
++    // always send at least at 20Hz, otherwise the IO board may think
++    // we are dead
++    if (now - _last_output > 50000) {
++        _need_update = true;
++    }
++
++    if (_need_update && _pwm_fd != -1) {
++        _need_update = false;
++        perf_begin(_perf_rcout);
++        ::write(_pwm_fd, _period, _max_channel*sizeof(_period[0]));
++        perf_end(_perf_rcout);
++        _last_output = now;
++    }
++}
++
++#endif // CONFIG_HAL_BOARD
+diff --git a/libraries/AP_HAL_NAVSTIK/RCOutput.h b/libraries/AP_HAL_NAVSTIK/RCOutput.h
+new file mode 100644
+index 0000000..3abeb36
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/RCOutput.h
+@@ -0,0 +1,37 @@
++
++#ifndef __AP_HAL_NAVSTIK_RCOUTPUT_H__
++#define __AP_HAL_NAVSTIK_RCOUTPUT_H__
++
++#include <AP_HAL_NAVSTIK.h>
++#include <systemlib/perf_counter.h>
++
++#define NAVSTIK_NUM_OUTPUT_CHANNELS 16
++
++class Navstik::NavstikRCOutput : public AP_HAL::RCOutput 
++{
++public:
++    void     init(void* machtnichts);
++    void     set_freq(uint32_t chmask, uint16_t freq_hz);
++    uint16_t get_freq(uint8_t ch);
++    void     enable_ch(uint8_t ch);
++    void     enable_mask(uint32_t chmask);
++    void     disable_ch(uint8_t ch);
++    void     disable_mask(uint32_t chmask);
++    void     write(uint8_t ch, uint16_t period_us);
++    void     write(uint8_t ch, uint16_t* period_us, uint8_t len);
++    uint16_t read(uint8_t ch);
++    void     read(uint16_t* period_us, uint8_t len);
++
++    void _timer_tick(void);
++
++private:
++    int _pwm_fd;
++    uint16_t _freq_hz;
++    uint16_t _period[NAVSTIK_NUM_OUTPUT_CHANNELS];
++    volatile uint8_t _max_channel;
++    volatile bool _need_update;
++    perf_counter_t  _perf_rcout;
++    uint32_t _last_output;
++};
++
++#endif // __AP_HAL_NAVSTIK_RCOUTPUT_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/Scheduler.cpp b/libraries/AP_HAL_NAVSTIK/Scheduler.cpp
+new file mode 100644
+index 0000000..e95a68a
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Scheduler.cpp
+@@ -0,0 +1,257 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
++#include "AP_HAL_NAVSTIK.h"
++#include "Scheduler.h"
++
++#include <unistd.h>
++#include <stdlib.h>
++#include <sched.h>
++#include <errno.h>
++#include <stdio.h>
++#include <drivers/drv_hrt.h>
++#include <nuttx/arch.h>
++#include <systemlib/systemlib.h>
++#include <poll.h>
++#include "up_internal.h"
++#include "UARTDriver.h"
++#include "Storage.h"
++#include "RCOutput.h"
++
++using namespace Navstik;
++
++extern const AP_HAL::HAL& hal;
++
++extern bool _navstik_thread_should_exit;
++
++NavstikScheduler::NavstikScheduler() :
++    _perf_timers(perf_alloc(PC_ELAPSED, "APM_timers")),
++	_perf_delay(perf_alloc(PC_ELAPSED, "APM_delay"))
++{}
++
++void NavstikScheduler::init(void *unused) 
++{
++    _sketch_start_time = hrt_absolute_time();
++
++    // setup the timer thread - this will call tasks at 1kHz
++	pthread_attr_t thread_attr;
++	struct sched_param param;
++
++	pthread_attr_init(&thread_attr);
++	pthread_attr_setstacksize(&thread_attr, 2048);
++
++	param.sched_priority = APM_TIMER_PRIORITY;
++	(void)pthread_attr_setschedparam(&thread_attr, &param);
++    pthread_attr_setschedpolicy(&thread_attr, SCHED_FIFO);
++
++	pthread_create(&_timer_thread_ctx, &thread_attr, (pthread_startroutine_t)&Navstik::NavstikScheduler::_timer_thread, this);
++
++    // the IO thread runs at lower priority
++	pthread_attr_init(&thread_attr);
++	pthread_attr_setstacksize(&thread_attr, 2048);
++
++	param.sched_priority = APM_IO_PRIORITY;
++	(void)pthread_attr_setschedparam(&thread_attr, &param);
++    pthread_attr_setschedpolicy(&thread_attr, SCHED_FIFO);
++
++	pthread_create(&_io_thread_ctx, &thread_attr, (pthread_startroutine_t)&Navstik::NavstikScheduler::_io_thread, this);
++}
++
++uint32_t NavstikScheduler::micros() 
++{
++    return (uint32_t)(hrt_absolute_time() - _sketch_start_time);
++}
++
++uint32_t NavstikScheduler::millis() 
++{
++    return hrt_absolute_time() / 1000;
++}
++
++void NavstikScheduler::delay_microseconds(uint16_t usec) 
++{
++    if (_in_timer_proc) {
++        ::printf("ERROR: delay_microseconds() from timer process\n");
++        return;
++    }
++    perf_begin(_perf_delay);
++	uint32_t start = micros();
++	while (micros() - start < usec) {
++		up_udelay(usec - (micros() - start));
++	}
++    perf_end(_perf_delay);
++}
++
++void NavstikScheduler::delay(uint16_t ms)
++{
++    if (_in_timer_proc) {
++        ::printf("ERROR: delay() from timer process\n");
++        return;
++    }
++    perf_begin(_perf_delay);
++	uint64_t start = hrt_absolute_time();
++    
++    while ((hrt_absolute_time() - start)/1000 < ms && 
++           !_navstik_thread_should_exit) {
++        // this yields the CPU to other apps
++        poll(NULL, 0, 1);
++        if (_min_delay_cb_ms <= ms) {
++            if (_delay_cb) {
++                _delay_cb();
++            }
++        }
++    }
++    perf_end(_perf_delay);
++    if (_navstik_thread_should_exit) {
++        exit(1);
++    }
++}
++
++void NavstikScheduler::register_delay_callback(AP_HAL::Proc proc,
++                                            uint16_t min_time_ms) 
++{
++    _delay_cb = proc;
++    _min_delay_cb_ms = min_time_ms;
++}
++
++void NavstikScheduler::register_timer_process(AP_HAL::TimedProc proc) 
++{
++    for (uint8_t i = 0; i < _num_timer_procs; i++) {
++        if (_timer_proc[i] == proc) {
++            return;
++        }
++    }
++
++    if (_num_timer_procs < NAVSTIK_SCHEDULER_MAX_TIMER_PROCS) {
++        _timer_proc[_num_timer_procs] = proc;
++        _num_timer_procs++;
++    } else {
++        hal.console->printf("Out of timer processes\n");
++    }
++}
++
++void NavstikScheduler::register_timer_failsafe(AP_HAL::TimedProc failsafe, uint32_t period_us) 
++{
++    _failsafe = failsafe;
++}
++
++void NavstikScheduler::suspend_timer_procs() 
++{
++    _timer_suspended = true;
++}
++
++void NavstikScheduler::resume_timer_procs() 
++{
++    _timer_suspended = false;
++    if (_timer_event_missed == true) {
++        _run_timers(false);
++        _timer_event_missed = false;
++    }
++}
++
++void NavstikScheduler::register_io_process(AP_HAL::TimedProc proc) 
++{
++    for (uint8_t i = 0; i < _num_io_procs; i++) {
++        if (_io_proc[i] == proc) {
++            return;
++        }
++    }
++
++    if (_num_io_procs < NAVSTIK_SCHEDULER_MAX_TIMER_PROCS) {
++        _io_proc[_num_io_procs] = proc;
++        _num_io_procs++;
++    } else {
++        hal.console->printf("Out of IO processes\n");
++    }
++}   
++
++void NavstikScheduler::reboot() 
++{
++	up_systemreset();
++}
++
++void NavstikScheduler::_run_timers(bool called_from_timer_thread)
++{
++    uint32_t tnow = micros();
++    if (_in_timer_proc) {
++        return;
++    }
++    _in_timer_proc = true;
++
++    if (!_timer_suspended) {
++        // now call the timer based drivers
++        for (int i = 0; i < _num_timer_procs; i++) {
++            if (_timer_proc[i] != NULL) {
++                _timer_proc[i](tnow);
++            }
++        }
++    } else if (called_from_timer_thread) {
++        _timer_event_missed = true;
++    }
++
++    // and the failsafe, if one is setup
++    if (_failsafe != NULL) {
++        _failsafe(tnow);
++    }
++
++    _in_timer_proc = false;
++}
++
++void *NavstikScheduler::_timer_thread(void)
++{
++    while (!_navstik_thread_should_exit) {
++        poll(NULL, 0, 1);
++
++        // run registered timers
++        perf_begin(_perf_timers);
++        _run_timers(true);
++        perf_end(_perf_timers);
++
++        // process any pending RC output requests
++        ((NavstikRCOutput *)hal.rcout)->_timer_tick();
++    }
++    return NULL;
++}
++
++void *NavstikScheduler::_io_thread(void)
++{
++    while (!_navstik_thread_should_exit) {
++        poll(NULL, 0, 1);
++
++        // process any pending serial bytes
++        ((NavstikUARTDriver *)hal.uartA)->_timer_tick();
++        ((NavstikUARTDriver *)hal.uartB)->_timer_tick();
++
++        // process any pending storage writes
++        ((NavstikStorage *)hal.storage)->_timer_tick();
++    }
++    return NULL;
++}
++
++void NavstikScheduler::panic(const prog_char_t *errormsg) 
++{
++    write(1, errormsg, strlen(errormsg));
++    write(1, "\n", 1);
++    hal.scheduler->delay_microseconds(10000);
++    _navstik_thread_should_exit = true;
++    exit(1);
++}
++
++bool NavstikScheduler::in_timerprocess() {
++    return _in_timer_proc;
++}
++
++bool NavstikScheduler::system_initializing() {
++    return !_initialized;
++}
++
++void NavstikScheduler::system_initialized() {
++    if (_initialized) {
++        panic(PSTR("PANIC: scheduler::system_initialized called"
++                   "more than once"));
++    }
++    _initialized = true;
++}
++
++#endif
+diff --git a/libraries/AP_HAL_NAVSTIK/Scheduler.h b/libraries/AP_HAL_NAVSTIK/Scheduler.h
+new file mode 100644
+index 0000000..88a9f03
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Scheduler.h
+@@ -0,0 +1,76 @@
++
++#ifndef __AP_HAL_NAVSTIK_SCHEDULER_H__
++#define __AP_HAL_NAVSTIK_SCHEDULER_H__
++
++#include <AP_HAL.h>
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "AP_HAL_NAVSTIK_Namespace.h"
++#include <sys/time.h>
++#include <signal.h>
++#include <pthread.h>
++#include <systemlib/perf_counter.h>
++
++#define NAVSTIK_SCHEDULER_MAX_TIMER_PROCS 8
++
++#define APM_MAIN_PRIORITY    200
++#define APM_TIMER_PRIORITY   201
++#define APM_IO_PRIORITY       60
++#define APM_OVERTIME_PRIORITY 10
++#define APM_STARTUP_PRIORITY  10
++
++/* Scheduler implementation: */
++class Navstik::NavstikScheduler : public AP_HAL::Scheduler {
++public:
++    NavstikScheduler();
++    /* AP_HAL::Scheduler methods */
++
++    void     init(void *unused);
++    void     delay(uint16_t ms);
++    uint32_t millis();
++    uint32_t micros();
++    void     delay_microseconds(uint16_t us);
++    void     register_delay_callback(AP_HAL::Proc, uint16_t min_time_ms);
++    void     register_timer_process(AP_HAL::TimedProc);
++    void     register_timer_failsafe(AP_HAL::TimedProc, uint32_t period_us);
++    void     suspend_timer_procs();
++    void     resume_timer_procs();
++    void     register_io_process(AP_HAL::TimedProc);
++    void     reboot();
++    void     panic(const prog_char_t *errormsg);
++
++    bool     in_timerprocess();
++    bool     system_initializing();
++    void     system_initialized();
++
++private:
++    bool _initialized;
++    AP_HAL::Proc _delay_cb;
++    uint16_t _min_delay_cb_ms;
++    AP_HAL::TimedProc _failsafe;
++    volatile bool _timer_pending;
++    uint64_t _sketch_start_time;
++
++    volatile bool _timer_suspended;
++    AP_HAL::TimedProc _timer_proc[NAVSTIK_SCHEDULER_MAX_TIMER_PROCS];
++    uint8_t _num_timer_procs;
++
++    AP_HAL::TimedProc _io_proc[NAVSTIK_SCHEDULER_MAX_TIMER_PROCS];
++    uint8_t _num_io_procs;
++    volatile bool _in_timer_proc;
++    volatile bool _timer_event_missed;
++
++    pthread_t _timer_thread_ctx;
++    pthread_t _io_thread_ctx;
++
++    void *_timer_thread(void);
++    void *_io_thread(void);
++
++    void _run_timers(bool called_from_timer_thread);
++
++    perf_counter_t  _perf_timers;
++    perf_counter_t  _perf_delay;
++};
++#endif
++#endif // __AP_HAL_NAVSTIK_SCHEDULER_H__
++
++
+diff --git a/libraries/AP_HAL_NAVSTIK/Storage.cpp b/libraries/AP_HAL_NAVSTIK/Storage.cpp
+new file mode 100644
+index 0000000..1d3f927
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Storage.cpp
+@@ -0,0 +1,219 @@
++#include <AP_HAL.h>
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
++#include <assert.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
++#include <stdio.h>
++
++#include "Storage.h"
++using namespace Navstik;
++
++/*
++  This stores 'eeprom' data on the SD card, with a 4k size, and a
++  in-memory buffer. This keeps the latency down.
++ */
++
++// name the storage file after the sketch so you can use the same sd
++// card for ArduCopter and ArduPlane
++#define STORAGE_DIR "/fs/microsd/APM"
++#define STORAGE_FILE STORAGE_DIR "/" SKETCHNAME ".stg"
++
++extern const AP_HAL::HAL& hal;
++
++void NavstikStorage::_storage_create(void)
++{
++	mkdir(STORAGE_DIR, 0777);
++	unlink(STORAGE_FILE);
++	_fd = open(STORAGE_FILE, O_RDWR|O_CREAT, 0666);
++	if (_fd == -1) {
++			hal.scheduler->panic("Failed to create " STORAGE_FILE);
++	}
++	for (uint16_t loc=0; loc<sizeof(_buffer); loc += NAVSTIK_STORAGE_MAX_WRITE) {
++		if (write(_fd, &_buffer[loc], NAVSTIK_STORAGE_MAX_WRITE) != NAVSTIK_STORAGE_MAX_WRITE) {
++			hal.scheduler->panic("Error filling " STORAGE_FILE);			
++		}
++	}
++	// ensure the directory is updated with the new size
++	fsync(_fd);
++}
++
++void NavstikStorage::_storage_open(void)
++{
++	if (_fd != -1) {
++		return;
++	}
++
++	_dirty_mask = 0;
++	_fd = open(STORAGE_FILE, O_RDWR);
++	if (_fd == -1) {
++		_storage_create();
++	} else if (read(_fd, _buffer, sizeof(_buffer)) != sizeof(_buffer)) {
++		close(_fd);
++		_fd = -1;
++		_storage_create();		
++	}
++}
++
++/*
++  mark some lines as dirty. Note that there is no attempt to avoid
++  the race condition between this code and the _timer_tick() code
++  below, which both update _dirty_mask. If we lose the race then the
++  result is that a line is written more than once, but it won't result
++  in a line not being written.
++ */
++void NavstikStorage::_mark_dirty(uint16_t loc, uint16_t length)
++{
++	uint16_t end = loc + length;
++	while (loc < end) {
++		uint8_t line = (loc >>	NAVSTIK_STORAGE_LINE_SHIFT);
++		_dirty_mask |= 1 << line;
++		loc += NAVSTIK_STORAGE_LINE_SIZE;
++	}
++}
++
++uint8_t NavstikStorage::read_byte(uint16_t loc) 
++{
++	if (loc >= sizeof(_buffer)) {
++		return 0;
++	}
++	_storage_open();
++	return _buffer[loc];
++}
++
++uint16_t NavstikStorage::read_word(uint16_t loc) 
++{
++	uint16_t value;
++	if (loc >= sizeof(_buffer)-(sizeof(value)-1)) {
++		return 0;
++	}
++	_storage_open();
++	memcpy(&value, &_buffer[loc], sizeof(value));
++	return value;
++}
++
++uint32_t NavstikStorage::read_dword(uint16_t loc) 
++{
++	uint32_t value;
++	if (loc >= sizeof(_buffer)-(sizeof(value)-1)) {
++		return 0;
++	}
++	_storage_open();
++	memcpy(&value, &_buffer[loc], sizeof(value));
++	return value;
++}
++
++void NavstikStorage::read_block(void *dst, uint16_t loc, size_t n) 
++{
++	if (loc >= sizeof(_buffer)-(n-1)) {
++		return;
++	}
++	_storage_open();
++	memcpy(dst, &_buffer[loc], n);
++}
++
++void NavstikStorage::write_byte(uint16_t loc, uint8_t value) 
++{
++	if (loc >= sizeof(_buffer)) {
++		return;
++	}
++	if (_buffer[loc] != value) {
++		_storage_open();
++		_buffer[loc] = value;
++		_mark_dirty(loc, sizeof(value));
++	}
++}
++
++void NavstikStorage::write_word(uint16_t loc, uint16_t value) 
++{
++	if (loc >= sizeof(_buffer)-(sizeof(value)-1)) {
++		return;
++	}
++	if (memcmp(&value, &_buffer[loc], sizeof(value)) != 0) {
++		_storage_open();
++		memcpy(&_buffer[loc], &value, sizeof(value));
++		_mark_dirty(loc, sizeof(value));
++	}
++}
++
++void NavstikStorage::write_dword(uint16_t loc, uint32_t value) 
++{
++	if (loc >= sizeof(_buffer)-(sizeof(value)-1)) {
++		return;
++	}
++	if (memcmp(&value, &_buffer[loc], sizeof(value)) != 0) {
++		_storage_open();
++		memcpy(&_buffer[loc], &value, sizeof(value));
++		_mark_dirty(loc, sizeof(value));
++	}
++}
++
++void NavstikStorage::write_block(uint16_t loc, const void *src, size_t n) 
++{
++	if (loc >= sizeof(_buffer)-(n-1)) {
++		return;
++	}
++	if (memcmp(src, &_buffer[loc], n) != 0) {
++		_storage_open();
++		memcpy(&_buffer[loc], src, n);
++		_mark_dirty(loc, n);
++	}
++}
++
++void NavstikStorage::_timer_tick(void)
++{
++	if (_fd == -1 || _dirty_mask == 0) {
++		return;
++	}
++	perf_begin(_perf_storage);
++	// write out the first dirty set of lines. We don't write more
++	// than one to keep the latency of this call to a minimum
++	uint8_t i, n;
++	for (i=0; i<NAVSTIK_STORAGE_NUM_LINES; i++) {
++		if (_dirty_mask & (1<<i)) {
++			break;
++		}
++	}
++	if (i == NAVSTIK_STORAGE_NUM_LINES) {
++		// this shouldn't be possible
++		perf_end(_perf_storage);
++		perf_count(_perf_errors);
++		return;
++	}
++	uint32_t write_mask = (1U<<i);
++	// see how many lines to write
++	for (n=1; (i+n) < NAVSTIK_STORAGE_NUM_LINES && 
++		     n < (1024>>NAVSTIK_STORAGE_LINE_SHIFT); n++) {
++		if (!(_dirty_mask & (1<<(n+i)))) {
++			break;
++		}		
++		// mark that line clean
++		write_mask |= (1<<(n+i));
++	}
++
++	/*
++	  write the lines. This also updates _dirty_mask. Note that
++	  because this is a SCHED_FIFO thread it will not be preempted
++	  by the main task except during blocking calls. This means we
++	  don't need a semaphore around the _dirty_mask updates.
++	 */
++	if (lseek(_fd, i<<NAVSTIK_STORAGE_LINE_SHIFT, SEEK_SET) == (i<<NAVSTIK_STORAGE_LINE_SHIFT)) {
++		_dirty_mask &= ~write_mask;
++		if (write(_fd, &_buffer[i<<NAVSTIK_STORAGE_LINE_SHIFT], n<<NAVSTIK_STORAGE_LINE_SHIFT) != n<<NAVSTIK_STORAGE_LINE_SHIFT) {
++			// write error - likely EINTR
++			_dirty_mask |= write_mask;
++			perf_count(_perf_errors);
++		}
++		if (_dirty_mask == 0) {
++			if (fsync(_fd) != 0) {
++				perf_count(_perf_errors);
++			}
++		}
++	}
++	perf_end(_perf_storage);
++}
++
++#endif // CONFIG_HAL_BOARD
+diff --git a/libraries/AP_HAL_NAVSTIK/Storage.h b/libraries/AP_HAL_NAVSTIK/Storage.h
+new file mode 100644
+index 0000000..319db0a
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Storage.h
+@@ -0,0 +1,48 @@
++
++
++#ifndef __AP_HAL_NAVSTIK_STORAGE_H__
++#define __AP_HAL_NAVSTIK_STORAGE_H__
++
++#include <AP_HAL.h>
++#include "AP_HAL_NAVSTIK_Namespace.h"
++#include <systemlib/perf_counter.h>
++
++#define NAVSTIK_STORAGE_SIZE 4096
++#define NAVSTIK_STORAGE_MAX_WRITE 512
++#define NAVSTIK_STORAGE_LINE_SHIFT 9
++#define NAVSTIK_STORAGE_LINE_SIZE (1<<NAVSTIK_STORAGE_LINE_SHIFT)
++#define NAVSTIK_STORAGE_NUM_LINES (NAVSTIK_STORAGE_SIZE/NAVSTIK_STORAGE_LINE_SIZE)
++
++class Navstik::NavstikStorage : public AP_HAL::Storage {
++public:
++    NavstikStorage() :
++	_fd(-1),
++	_dirty_mask(0),
++	_perf_storage(perf_alloc(PC_ELAPSED, "APM_storage")),
++	_perf_errors(perf_alloc(PC_COUNT, "APM_storage_errors"))
++	{}
++    void init(void* machtnichts) {}
++    uint8_t  read_byte(uint16_t loc);
++    uint16_t read_word(uint16_t loc);
++    uint32_t read_dword(uint16_t loc);
++    void     read_block(void *dst, uint16_t src, size_t n);
++
++    void write_byte(uint16_t loc, uint8_t value);
++    void write_word(uint16_t loc, uint16_t value);
++    void write_dword(uint16_t loc, uint32_t value);
++    void write_block(uint16_t dst, const void* src, size_t n);
++
++    void _timer_tick(void);
++
++private:
++    int _fd;
++    void _storage_create(void);
++    void _storage_open(void);
++    void _mark_dirty(uint16_t loc, uint16_t length);
++    uint8_t _buffer[NAVSTIK_STORAGE_SIZE];
++    volatile uint32_t _dirty_mask;
++    perf_counter_t  _perf_storage;
++    perf_counter_t  _perf_errors;
++};
++
++#endif // __AP_HAL_NAVSTIK_STORAGE_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/UARTDriver.cpp b/libraries/AP_HAL_NAVSTIK/UARTDriver.cpp
+new file mode 100644
+index 0000000..f6abb40
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/UARTDriver.cpp
+@@ -0,0 +1,376 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "UARTDriver.h"
++
++#include <stdio.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <errno.h>
++#include <sys/ioctl.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <termios.h>
++
++using namespace Navstik;
++
++extern const AP_HAL::HAL& hal;
++
++NavstikUARTDriver::NavstikUARTDriver(const char *devpath, const char *perf_name) :
++	_devpath(devpath),
++    _perf_uart(perf_alloc(PC_ELAPSED, perf_name))
++{}
++
++
++extern const AP_HAL::HAL& hal;
++
++/*
++  this UART driver maps to a serial device in /dev
++ */
++
++void NavstikUARTDriver::begin(uint32_t b, uint16_t rxS, uint16_t txS) 
++{
++	if (!_initialised) {
++		_fd = open(_devpath, O_RDWR);
++		if (_fd == -1) {
++			fprintf(stdout, "Failed to open UART device %s - %s\n",
++				_devpath, strerror(errno));
++			return;
++		}
++
++        // always set it non-blocking for the low level IO
++        unsigned v;
++        v = fcntl(_fd, F_GETFL, 0);
++        fcntl(_fd, F_SETFL, v | O_NONBLOCK);
++
++		_initialised = true;
++        if (rxS == 0) {
++            rxS = 128;
++        }
++        if (txS == 0) {
++            txS = 128;
++        }
++	}
++
++	if (b != 0) {
++		// set the baud rate
++		struct termios t;
++		tcgetattr(_fd, &t);
++		cfsetspeed(&t, b);
++		// disable LF -> CR/LF
++		t.c_oflag &= ~ONLCR;
++		tcsetattr(_fd, TCSANOW, &t);
++	}
++
++    /*
++      allocate the read buffer
++     */
++	if (rxS != 0 && rxS != _readbuf_size) {
++        _initialised = false;
++        while (_in_timer) hal.scheduler->delay(1);
++		_readbuf_size = rxS;
++		if (_readbuf != NULL) {
++			free(_readbuf);
++		}
++		_readbuf = (uint8_t *)malloc(_readbuf_size);
++		_readbuf_head = 0;
++		_readbuf_tail = 0;
++        _initialised = true;
++	}
++
++    /*
++      allocate the write buffer
++     */
++	if (txS != 0 && txS != _writebuf_size) {
++        _initialised = false;
++        while (_in_timer) hal.scheduler->delay(1);
++		_writebuf_size = txS;
++		if (_writebuf != NULL) {
++			free(_writebuf);
++		}
++		_writebuf = (uint8_t *)malloc(_writebuf_size);
++		_writebuf_head = 0;
++		_writebuf_tail = 0;
++        _initialised = true;
++	}
++}
++
++void NavstikUARTDriver::begin(uint32_t b) 
++{
++	begin(b, 0, 0);
++}
++
++
++void NavstikUARTDriver::end() {}
++void NavstikUARTDriver::flush() {}
++bool NavstikUARTDriver::is_initialized() { return true; }
++void NavstikUARTDriver::set_blocking_writes(bool blocking) 
++{
++    _nonblocking_writes = !blocking;
++}
++bool NavstikUARTDriver::tx_pending() { return false; }
++
++/* Navstik implementations of BetterStream virtual methods */
++void NavstikUARTDriver::print_P(const prog_char_t *pstr) {
++	print(pstr);
++}
++
++void NavstikUARTDriver::println_P(const prog_char_t *pstr) {
++	println(pstr);
++}
++
++void NavstikUARTDriver::printf(const char *fmt, ...) {
++    va_list ap;
++    va_start(ap, fmt);
++    _vprintf(fmt, ap);
++    va_end(ap);	
++}
++
++void NavstikUARTDriver::_printf_P(const prog_char *fmt, ...) {
++    va_list ap;
++    va_start(ap, fmt);
++    _vprintf(fmt, ap);
++    va_end(ap);	
++}
++
++void NavstikUARTDriver::vprintf(const char *fmt, va_list ap) {
++    _vprintf(fmt, ap);
++}
++
++void NavstikUARTDriver::vprintf_P(const prog_char *fmt, va_list ap) {
++    _vprintf(fmt, ap);
++}
++
++
++void NavstikUARTDriver::_internal_vprintf(const char *fmt, va_list ap)
++{
++    if (hal.scheduler->in_timerprocess()) {
++        // not allowed from timers
++        return;
++    }
++    char *buf = NULL;
++    int n = avsprintf(&buf, fmt, ap);
++    if (n > 0) {
++        write((const uint8_t *)buf, n);
++    }
++    if (buf != NULL) {
++        free(buf);    
++    }
++}
++
++// handle %S -> %s
++void NavstikUARTDriver::_vprintf(const char *fmt, va_list ap)
++{
++    if (hal.scheduler->in_timerprocess()) {
++        // not allowed from timers
++        return;
++    }
++    // we don't use vdprintf() as it goes directly to the file descriptor
++	if (strstr(fmt, "%S")) {
++		char *fmt2 = strdup(fmt);
++		if (fmt2 != NULL) {
++			for (uint16_t i=0; fmt2[i]; i++) {
++				if (fmt2[i] == '%' && fmt2[i+1] == 'S') {
++					fmt2[i+1] = 's';
++				}
++			}
++            _internal_vprintf(fmt2, ap);
++			free(fmt2);
++		}
++	} else {
++        _internal_vprintf(fmt, ap);
++	}	
++}
++
++
++/*
++  buffer handling macros
++ */
++#define BUF_AVAILABLE(buf) ((buf##_head > (_tail=buf##_tail))? (buf##_size - buf##_head) + _tail: _tail - buf##_head)
++#define BUF_SPACE(buf) (((_head=buf##_head) > buf##_tail)?(buf##_tail - _head) - 1:((buf##_size - buf##_tail) + _head) - 1)
++#define BUF_EMPTY(buf) (buf##_head == buf##_tail)
++#define BUF_ADVANCETAIL(buf, n) buf##_tail = (buf##_tail + n) % buf##_size
++#define BUF_ADVANCEHEAD(buf, n) buf##_head = (buf##_head + n) % buf##_size
++
++/*
++  return number of bytes available to be read from the buffer
++ */
++int16_t NavstikUARTDriver::available() 
++{ 
++	if (!_initialised) {
++		return 0;
++	}
++    uint16_t _tail;
++    return BUF_AVAILABLE(_readbuf);
++}
++
++/*
++  return number of bytes that can be added to the write buffer
++ */
++int16_t NavstikUARTDriver::txspace() 
++{ 
++	if (!_initialised) {
++		return 0;
++	}
++    uint16_t _head;
++    return BUF_SPACE(_writebuf);
++}
++
++/*
++  read one byte from the read buffer
++ */
++int16_t NavstikUARTDriver::read() 
++{ 
++	uint8_t c;
++	if (!_initialised || _readbuf == NULL) {
++		return -1;
++	}
++    if (BUF_EMPTY(_readbuf)) {
++        return -1;
++    }
++    c = _readbuf[_readbuf_head];
++    BUF_ADVANCEHEAD(_readbuf, 1);
++	return c;
++}
++
++/* 
++   write one byte to the buffer
++ */
++size_t NavstikUARTDriver::write(uint8_t c) 
++{ 
++    if (!_initialised) {
++        return 0;
++    }
++    if (hal.scheduler->in_timerprocess()) {
++        // not allowed from timers
++        return 0;
++    }
++    uint16_t _head;
++    while (BUF_SPACE(_writebuf) == 0) {
++        if (_nonblocking_writes) {
++            return 0;
++        }
++        hal.scheduler->delay(1);
++    }
++    _writebuf[_writebuf_tail] = c;
++    BUF_ADVANCETAIL(_writebuf, 1);
++    return 1;
++}
++
++/*
++  write size bytes to the write buffer
++ */
++size_t NavstikUARTDriver::write(const uint8_t *buffer, size_t size)
++{
++	if (!_initialised) {
++		return 0;
++	}
++    if (hal.scheduler->in_timerprocess()) {
++        // not allowed from timers
++        return 0;
++    }
++    uint16_t _head, space;
++    space = BUF_SPACE(_writebuf);
++    if (space == 0) {
++        return 0;
++    }
++    if (size > space) {
++        size = space;
++    }
++    if (_writebuf_tail < _head) {
++        // perform as single memcpy
++        memcpy(&_writebuf[_writebuf_tail], buffer, size);
++        BUF_ADVANCETAIL(_writebuf, size);
++        return size;
++    }
++
++    // perform as two memcpy calls
++    uint16_t n = _writebuf_size - _writebuf_tail;
++    if (n > size) n = size;
++    memcpy(&_writebuf[_writebuf_tail], buffer, n);
++    BUF_ADVANCETAIL(_writebuf, n);
++    buffer += n;
++    n = size - n;
++    if (n > 0) {
++        memcpy(&_writebuf[_writebuf_tail], buffer, n);
++        BUF_ADVANCETAIL(_writebuf, n);
++    }        
++    return size;
++}
++
++/*
++  push any pending bytes to/from the serial port. This is called at
++  1kHz in the timer thread. Doing it this way reduces the system call
++  overhead in the main task enormously. 
++ */
++void NavstikUARTDriver::_timer_tick(void)
++{
++    uint16_t n;
++
++    if (!_initialised) return;
++
++    _in_timer = true;
++
++    // write any pending bytes
++    uint16_t _tail;
++    n = BUF_AVAILABLE(_writebuf);
++    if (n > 0) {
++        perf_begin(_perf_uart);
++        if (_tail > _writebuf_head) {
++            // do as a single write
++            int ret = ::write(_fd, &_writebuf[_writebuf_head], n);
++            if (ret > 0) {
++                BUF_ADVANCEHEAD(_writebuf, ret);
++            }
++        } else {
++            // split into two writes
++            uint16_t n1 = _writebuf_size - _writebuf_head;
++            int ret = ::write(_fd, &_writebuf[_writebuf_head], n1);
++            if (ret > 0) {
++                BUF_ADVANCEHEAD(_writebuf, ret);
++            }
++            if (ret == n1 && n != n1) {
++                ret = ::write(_fd, &_writebuf[_writebuf_head], n - n1);                
++                if (ret > 0) {
++                    BUF_ADVANCEHEAD(_writebuf, ret);
++                }
++            }
++        }
++        perf_end(_perf_uart);
++    }
++
++    // try to fill the read buffer
++    uint16_t _head;
++    n = BUF_SPACE(_readbuf);
++    if (n > 0) {
++        perf_begin(_perf_uart);
++        if (_readbuf_tail < _head) {
++            // one read will do
++            int ret = ::read(_fd, &_readbuf[_readbuf_tail], n);
++            if (ret > 0) {
++                BUF_ADVANCETAIL(_readbuf, ret);
++            }
++        } else {
++            uint16_t n1 = _readbuf_size - _readbuf_tail;
++            int ret = ::read(_fd, &_readbuf[_readbuf_tail], n1);
++            if (ret > 0) {
++                BUF_ADVANCETAIL(_readbuf, ret);
++            }
++            if (ret == n1 && n != n1) {
++                ret = ::read(_fd, &_readbuf[_readbuf_tail], n - n1);                
++                if (ret > 0) {
++                    BUF_ADVANCETAIL(_readbuf, ret);
++                }
++            }
++        }
++        perf_end(_perf_uart);
++    }
++
++    _in_timer = false;
++}
++
++#endif // CONFIG_HAL_BOARD
++
+diff --git a/libraries/AP_HAL_NAVSTIK/UARTDriver.h b/libraries/AP_HAL_NAVSTIK/UARTDriver.h
+new file mode 100644
+index 0000000..6c40541
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/UARTDriver.h
+@@ -0,0 +1,76 @@
++
++#ifndef __AP_HAL_NAVSTIK_UARTDRIVER_H__
++#define __AP_HAL_NAVSTIK_UARTDRIVER_H__
++
++#include <AP_HAL_NAVSTIK.h>
++#include <systemlib/perf_counter.h>
++
++class Navstik::NavstikUARTDriver : public AP_HAL::UARTDriver {
++public:
++    NavstikUARTDriver(const char *devpath, const char *perf_name);
++    /* Navstik implementations of UARTDriver virtual methods */
++    void begin(uint32_t b);
++    void begin(uint32_t b, uint16_t rxS, uint16_t txS);
++    void end();
++    void flush();
++    bool is_initialized();
++    void set_blocking_writes(bool blocking);
++    bool tx_pending();
++
++    /* Navstik implementations of BetterStream virtual methods */
++    void print_P(const prog_char_t *pstr);
++    void println_P(const prog_char_t *pstr);
++    void printf(const char *pstr, ...);
++    void _printf_P(const prog_char *pstr, ...);
++
++    void vprintf(const char* fmt, va_list ap);
++    void vprintf_P(const prog_char* fmt, va_list ap);
++
++    /* Navstik implementations of Stream virtual methods */
++    int16_t available();
++    int16_t txspace();
++    int16_t read();
++
++    /* Navstik implementations of Print virtual methods */
++    size_t write(uint8_t c);
++    size_t write(const uint8_t *buffer, size_t size);
++
++    volatile bool _initialised;
++    volatile bool _in_timer;
++
++    void set_device_path(const char *path) {
++	    _devpath = path;
++    }
++
++    void _timer_tick(void);
++
++    int _get_fd(void) {
++	    return _fd;
++    }
++
++private:
++    const char *_devpath;
++    int _fd;
++    void _vprintf(const char *fmt, va_list ap);
++    void _internal_vprintf(const char *fmt, va_list ap);
++
++    bool _nonblocking_writes;
++
++    // we use in-task ring buffers to reduce the system call cost
++    // of ::read() and ::write() in the main loop
++    uint8_t *_readbuf;
++    uint16_t _readbuf_size;
++
++    // _head is where the next available data is. _tail is where new
++    // data is put
++    volatile uint16_t _readbuf_head;
++    volatile uint16_t _readbuf_tail;
++
++    uint8_t *_writebuf;
++    uint16_t _writebuf_size;
++    volatile uint16_t _writebuf_head;
++    volatile uint16_t _writebuf_tail;
++    perf_counter_t  _perf_uart;
++};
++
++#endif // __AP_HAL_NAVSTIK_UARTDRIVER_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/Util.cpp b/libraries/AP_HAL_NAVSTIK/Util.cpp
+new file mode 100644
+index 0000000..b26da7e
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Util.cpp
+@@ -0,0 +1,84 @@
++
++#include <AP_HAL.h>
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include <stdio.h>
++#include <stdarg.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <errno.h>
++#include <apps/nsh.h>
++#include <fcntl.h>
++#include "UARTDriver.h"
++
++extern const AP_HAL::HAL& hal;
++
++static int libc_vsnprintf(char* str, size_t size, const char *format, va_list ap) 
++{
++    return vsnprintf(str, size, format, ap);
++}
++
++#include "Util.h"
++using namespace Navstik;
++
++int NavstikUtil::snprintf(char* str, size_t size, const char *format, ...)
++{
++    va_list ap;
++    va_start(ap, format);
++    int res = libc_vsnprintf(str, size, format, ap);
++    va_end(ap);
++    return res;
++}
++
++int NavstikUtil::snprintf_P(char* str, size_t size, const prog_char_t *format, ...)
++{
++    va_list ap;
++    va_start(ap, format);
++    int res = libc_vsnprintf(str, size, format, ap);
++    va_end(ap);
++    return res;
++}
++
++
++int NavstikUtil::vsnprintf(char* str, size_t size, const char *format, va_list ap)
++{
++    return libc_vsnprintf(str, size, format, ap);
++}
++
++int NavstikUtil::vsnprintf_P(char* str, size_t size, const prog_char_t *format,
++            va_list ap)
++{
++    return libc_vsnprintf(str, size, format, ap);
++}
++
++/*
++  start an instance of nsh
++ */
++bool NavstikUtil::run_debug_shell(AP_HAL::BetterStream *stream)
++{
++	NavstikUARTDriver *uart = (NavstikUARTDriver *)stream;
++	int fd;
++
++	// take control of stream fd
++	fd = uart->_get_fd();
++
++	// mark it blocking (nsh expects a blocking fd)
++        unsigned v;
++        v = fcntl(fd, F_GETFL, 0);
++        fcntl(fd, F_SETFL, v & ~O_NONBLOCK);	
++
++	// setup the UART on stdin/stdout/stderr
++	close(0);
++	close(1);
++	close(2);
++	dup2(fd, 0);
++	dup2(fd, 1);
++	dup2(fd, 2);
++
++	nsh_consolemain(0, NULL);
++
++	// this shouldn't happen
++	hal.console->printf("shell exited\n");
++	return true;
++}
++
++#endif // CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
+diff --git a/libraries/AP_HAL_NAVSTIK/Util.h b/libraries/AP_HAL_NAVSTIK/Util.h
+new file mode 100644
+index 0000000..9f24d4f
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/Util.h
+@@ -0,0 +1,18 @@
++
++#ifndef __AP_HAL_NAVSTIK_UTIL_H__
++#define __AP_HAL_NAVSTIK_UTIL_H__
++
++#include <AP_HAL.h>
++#include "AP_HAL_NAVSTIK_Namespace.h"
++
++class Navstik::NavstikUtil : public AP_HAL::Util {
++public:
++    int snprintf(char* str, size_t size, const char *format, ...);
++    int snprintf_P(char* str, size_t size, const prog_char_t *format, ...);
++    int vsnprintf(char* str, size_t size, const char *format, va_list ap);
++    int vsnprintf_P(char* str, size_t size, const prog_char_t *format,
++            va_list ap);
++    bool run_debug_shell(AP_HAL::BetterStream *stream);
++};
++
++#endif // __AP_HAL_NAVSTIK_UTIL_H__
+diff --git a/libraries/AP_HAL_NAVSTIK/examples/simple/Makefile b/libraries/AP_HAL_NAVSTIK/examples/simple/Makefile
+new file mode 100644
+index 0000000..f5daf25
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/examples/simple/Makefile
+@@ -0,0 +1 @@
++include ../../../../mk/apm.mk
+diff --git a/libraries/AP_HAL_NAVSTIK/examples/simple/simple.pde b/libraries/AP_HAL_NAVSTIK/examples/simple/simple.pde
+new file mode 100644
+index 0000000..cda1814
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/examples/simple/simple.pde
+@@ -0,0 +1,38 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: t -*-
++
++/*
++  simple hello world sketch
++  Andrew Tridgell September 2011
++*/
++
++#include <AP_Common.h>
++#include <AP_Progmem.h>
++#include <AP_HAL.h>
++#include <AP_HAL_AVR.h>
++#include <AP_HAL_AVR_SITL.h>
++#include <AP_HAL_NAVSTIK.h>
++#include <AP_HAL_Empty.h>
++#include <AP_Math.h>
++#include <Filter.h>
++#include <AP_InertialSensor.h>
++#include <AP_ADC.h>
++#include <GCS_MAVLink.h>
++#include <AP_Param.h>
++#include <AP_Baro.h>
++#include <AP_Compass.h>
++#include <AP_Declination.h>
++#include <SITL.h>
++
++const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
++
++void setup() {
++	hal.console->println_P(PSTR("hello world"));
++}
++
++void loop()
++{
++	hal.scheduler->delay(1000);
++	hal.console->println("*");
++}
++
++AP_HAL_MAIN();
+diff --git a/libraries/AP_HAL_NAVSTIK/scripts/rc.APM b/libraries/AP_HAL_NAVSTIK/scripts/rc.APM
+new file mode 100644
+index 0000000..d45df8f
+--- /dev/null
++++ b/libraries/AP_HAL_NAVSTIK/scripts/rc.APM
+@@ -0,0 +1,61 @@
++#!nsh
++
++# APM startup script for NuttX on Navstik
++
++if [ -f /fs/microsd/APM/nostart ]
++then
++   echo "APM/nostart found - skipping"
++else
++
++uorb start
++
++# mount binfs so we can find the built-in apps
++mount -t binfs /dev/null /bin
++
++set device /dev/ttyS2
++set sketch NONE
++
++if [ -f /bin/ArduPlane ]
++then
++	set sketch ArduPlane
++fi
++
++if [ -f /bin/ArduCopter ]
++then
++	set sketch ArduCopter
++fi
++
++if [ -f /bin/APMrover2 ]
++then
++	set sketch APMrover2
++fi
++
++if [ $sketch != NONE ]
++then
++	echo "Starting APM sensors"
++	mpu60x0 start
++	bmp180 start
++	hmc5883 start
++	adc start
++
++	fmu start mode_pwm
++#	if [ $device == /dev/ttyS1 ]
++#	then
++# ttyS1 is used for PWM output when there
++# is no IO board
++#	set device /dev/ttyS2
++#	fi
++
++	echo Starting $sketch
++	$sketch -d $device start
++
++	# if starting on the console, tell nsh to exit
++	# this prevents it from chewing bytes
++	if [ $device == /dev/ttyS0 ]
++	then
++		exit
++	fi
++else
++	echo "No APM sketch found"
++fi
++fi
+diff --git a/libraries/AP_HAL_PX4/GPIO.cpp b/libraries/AP_HAL_PX4/GPIO.cpp
+index bb4822c..b3f932d 100644
+--- a/libraries/AP_HAL_PX4/GPIO.cpp
++++ b/libraries/AP_HAL_PX4/GPIO.cpp
+@@ -46,7 +46,7 @@ void PX4GPIO::init()
+         hal.scheduler->panic("Unable to open /dev/tone_alarm");
+     }
+ 
+-    _gpio_fd = open(GPIO_DEVICE_PATH, O_RDWR);
++    _gpio_fd = open(PX4FMU_DEVICE_PATH, O_RDWR);
+     if (_gpio_fd == -1) {
+         hal.scheduler->panic("Unable to open GPIO");
+     }
+diff --git a/libraries/AP_HAL_PX4/HAL_PX4_Class.cpp b/libraries/AP_HAL_PX4/HAL_PX4_Class.cpp
+index f5357e4..f5d3445 100644
+--- a/libraries/AP_HAL_PX4/HAL_PX4_Class.cpp
++++ b/libraries/AP_HAL_PX4/HAL_PX4_Class.cpp
+@@ -227,7 +227,7 @@ void HAL_PX4::init(int argc, char * const argv[]) const
+                    SKETCHNAME, deviceA, deviceC);
+ 
+             _px4_thread_should_exit = false;
+-            daemon_task = task_spawn(SKETCHNAME,
++            daemon_task = task_spawn_cmd(SKETCHNAME,
+                                      SCHED_FIFO,
+                                      APM_MAIN_PRIORITY,
+                                      8192,
+diff --git a/libraries/AP_InertialSensor/AP_InertialSensor_Navstik.cpp b/libraries/AP_InertialSensor/AP_InertialSensor_Navstik.cpp
+new file mode 100644
+index 0000000..4dd36a5
+--- /dev/null
++++ b/libraries/AP_InertialSensor/AP_InertialSensor_Navstik.cpp
+@@ -0,0 +1,179 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#include <AP_HAL.h>
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++#include "AP_InertialSensor_Navstik.h"
++
++const extern AP_HAL::HAL& hal;
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include <drivers/drv_accel.h>
++#include <drivers/drv_gyro.h>
++
++Vector3f AP_InertialSensor_Navstik::_accel_sum;
++uint32_t AP_InertialSensor_Navstik::_accel_sum_count;
++Vector3f AP_InertialSensor_Navstik::_gyro_sum;
++uint32_t AP_InertialSensor_Navstik::_gyro_sum_count;
++volatile bool AP_InertialSensor_Navstik::_in_accumulate;
++uint64_t AP_InertialSensor_Navstik::_last_accel_timestamp;
++uint64_t AP_InertialSensor_Navstik::_last_gyro_timestamp;
++int AP_InertialSensor_Navstik::_accel_fd;
++int AP_InertialSensor_Navstik::_gyro_fd;
++
++uint16_t AP_InertialSensor_Navstik::_init_sensor( Sample_rate sample_rate ) 
++{
++    switch (sample_rate) {
++    case RATE_50HZ:
++        _sample_divider = 4;
++        break;
++    case RATE_100HZ:
++        _sample_divider = 2;
++        break;
++    case RATE_200HZ:
++    default:
++        _sample_divider = 1;
++        break;
++    }
++
++	// init accelerometers
++	_accel_fd = open(ACCEL_DEVICE_PATH, O_RDONLY);
++	if (_accel_fd < 0) {
++        hal.scheduler->panic("Unable to open accel device " ACCEL_DEVICE_PATH);
++    }
++
++	_gyro_fd = open(GYRO_DEVICE_PATH, O_RDONLY);
++	if (_gyro_fd < 0) {
++        hal.scheduler->panic("Unable to open gyro device " GYRO_DEVICE_PATH);
++    }
++
++    /* 
++     * set the accel and gyro sampling rate. We always set these to
++     * 200 then average in this driver
++     */
++    ioctl(_accel_fd, ACCELIOCSSAMPLERATE, 200);
++    ioctl(_accel_fd, SENSORIOCSPOLLRATE,  200);
++    ioctl(_gyro_fd,  GYROIOCSSAMPLERATE,  200);
++    ioctl(_gyro_fd,  SENSORIOCSPOLLRATE,  200);
++
++    // ask for a 10 sample buffer. The mpu6000 Navstik driver doesn't
++    // support this yet, but when it does we want to use it
++    ioctl(_accel_fd, SENSORIOCSQUEUEDEPTH, 10);
++    ioctl(_gyro_fd,  SENSORIOCSQUEUEDEPTH, 10);
++
++    // register a 1kHz timer to read from Navstik sensor drivers
++    hal.scheduler->register_timer_process(_ins_timer);
++
++    return AP_PRODUCT_ID_NAVSTIK;
++    return AP_PRODUCT_ID_PX4;
++}
++
++/*================ AP_INERTIALSENSOR PUBLIC INTERFACE ==================== */
++
++bool AP_InertialSensor_Navstik::update(void) 
++{
++    while (num_samples_available() == 0) {
++        hal.scheduler->delay(1);
++    }
++    Vector3f accel_scale = _accel_scale.get();
++
++    hal.scheduler->suspend_timer_procs();
++
++    // base the time on the gyro timestamp, as that is what is
++    // multiplied by time to integrate in DCM
++    _delta_time = (_last_gyro_timestamp - _last_update_usec) * 1.0e-6f;
++    _last_update_usec = _last_gyro_timestamp;
++
++    _accel = _accel_sum / _accel_sum_count;
++    _accel_sum.zero();
++    _accel_sum_count = 0;
++
++    _gyro = _gyro_sum / _gyro_sum_count;
++    _gyro_sum.zero();
++    _gyro_sum_count = 0;
++
++    hal.scheduler->resume_timer_procs();
++
++    // add offsets and rotation
++    _accel.rotate(_board_orientation);
++    _accel.x *= accel_scale.x;
++    _accel.y *= accel_scale.y;
++    _accel.z *= accel_scale.z;
++    _accel   -= _accel_offset;
++
++    _gyro.rotate(_board_orientation);
++    _gyro -= _gyro_offset;
++
++    return true;
++}
++
++bool AP_InertialSensor_Navstik::new_data_available(void) 
++{
++    return num_samples_available() > 0;
++}
++
++
++float AP_InertialSensor_Navstik::temperature(void) 
++{
++    return 0.0;
++}
++
++float AP_InertialSensor_Navstik::get_delta_time(void) 
++{
++    return _delta_time;
++}
++
++uint32_t AP_InertialSensor_Navstik::get_last_sample_time_micros(void) 
++{
++    return _last_update_usec;
++}
++
++float AP_InertialSensor_Navstik::get_gyro_drift_rate(void) 
++{
++    // 0.5 degrees/second/minute
++    return ToRad(0.5/60);
++}
++
++void AP_InertialSensor_Navstik::_accumulate(void)
++{
++    struct accel_report	accel_report;
++    struct gyro_report	gyro_report;
++
++    if (_in_accumulate) {
++        return;
++    }
++    _in_accumulate = true;
++
++    if (::read(_accel_fd, &accel_report, sizeof(accel_report)) == sizeof(accel_report) &&
++        accel_report.timestamp != _last_accel_timestamp) {        
++        _accel_sum += Vector3f(accel_report.x, accel_report.y, accel_report.z);
++        _accel_sum_count++;
++        _last_accel_timestamp = accel_report.timestamp;
++	}
++
++    if (::read(_gyro_fd, &gyro_report, sizeof(gyro_report)) == sizeof(gyro_report) &&
++        gyro_report.timestamp != _last_gyro_timestamp) {        
++        _gyro_sum += Vector3f(gyro_report.x, gyro_report.y, gyro_report.z);
++        _gyro_sum_count++;
++        _last_gyro_timestamp = gyro_report.timestamp;
++	}
++
++    _in_accumulate = false;
++}
++
++void AP_InertialSensor_Navstik::_ins_timer(uint32_t now)
++{
++    _accumulate();
++}
++
++uint16_t AP_InertialSensor_Navstik::num_samples_available(void)
++{
++    _accumulate();
++    return min(_accel_sum_count, _gyro_sum_count) / _sample_divider;
++}
++
++#endif // CONFIG_HAL_BOARD
++
+diff --git a/libraries/AP_InertialSensor/AP_InertialSensor_Navstik.h b/libraries/AP_InertialSensor/AP_InertialSensor_Navstik.h
+new file mode 100644
+index 0000000..2f17051
+--- /dev/null
++++ b/libraries/AP_InertialSensor/AP_InertialSensor_Navstik.h
+@@ -0,0 +1,51 @@
++/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
++
++#ifndef __AP_INERTIAL_SENSOR_NAVSTIK_H__
++#define __AP_INERTIAL_SENSOR_NAVSTIK_H__
++
++#include <AP_HAL.h>
++#if CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
++
++#include <AP_Progmem.h>
++#include "AP_InertialSensor.h"
++#include <drivers/drv_accel.h>
++#include <drivers/drv_gyro.h>
++#include <uORB/uORB.h>
++#include <uORB/topics/sensor_combined.h>
++
++class AP_InertialSensor_Navstik : public AP_InertialSensor
++{
++public:
++
++    AP_InertialSensor_Navstik() {}
++
++    /* Concrete implementation of AP_InertialSensor functions: */
++    bool            update();
++    bool            new_data_available();
++    float           temperature();
++    float        	get_delta_time();
++    uint32_t        get_last_sample_time_micros();
++    float           get_gyro_drift_rate();
++    uint16_t        num_samples_available();
++
++private:
++    uint16_t        _init_sensor( Sample_rate sample_rate );
++    static		    void _ins_timer(uint32_t now);
++    static          void _accumulate(void);
++    uint64_t        _last_update_usec;
++    float           _delta_time;
++    static Vector3f	_accel_sum;
++    static uint32_t _accel_sum_count;
++    static Vector3f	_gyro_sum;
++    static uint32_t _gyro_sum_count;
++    static volatile bool _in_accumulate;
++    static uint64_t _last_accel_timestamp;
++    static uint64_t _last_gyro_timestamp;
++    uint8_t  _sample_divider;
++
++    // accelerometer and gyro driver handles
++    static int _accel_fd;
++    static int _gyro_fd;
++};
++#endif
++#endif // __AP_INERTIAL_SENSOR_NAVSTIK_H__
+diff --git a/libraries/AP_Progmem/AP_Progmem.h b/libraries/AP_Progmem/AP_Progmem.h
+index 7903776..5a3e759 100644
+--- a/libraries/AP_Progmem/AP_Progmem.h
++++ b/libraries/AP_Progmem/AP_Progmem.h
+@@ -5,7 +5,7 @@
+ #include <AP_HAL_Boards.h>
+ #if defined(__AVR__) 
+ #include "AP_Progmem_AVR.h"
+-#elif CONFIG_HAL_BOARD == HAL_BOARD_PX4 || CONFIG_HAL_BOARD == HAL_BOARD_AVR_SITL || CONFIG_HAL_BOARD == HAL_BOARD_SMACCM
++#elif CONFIG_HAL_BOARD == HAL_BOARD_PX4 || CONFIG_HAL_BOARD == HAL_BOARD_AVR_SITL || CONFIG_HAL_BOARD == HAL_BOARD_SMACCM || CONFIG_HAL_BOARD == HAL_BOARD_NAVSTIK
+ #include "AP_Progmem_Identity.h"
+ #else
+ #error "this build type is unknown - please edit AP_Progmem.h"
+diff --git a/mk/Navstik/config_navstik_default.mk b/mk/Navstik/config_navstik_default.mk
+new file mode 100644
+index 0000000..b8c472b
+--- /dev/null
++++ b/mk/Navstik/config_navstik_default.mk
+@@ -0,0 +1,59 @@
++#
++# Makefile for the navstik configuration
++#
++
++MODULES		+= $(APM_MODULE_DIR)
++
++#
++# Board support modules
++#
++MODULES		+= drivers/device
++MODULES		+= drivers/stm32
++MODULES		+= drivers/stm32/adc
++#MODULES		+= drivers/stm32/tone_alarm
++MODULES		+= drivers/led
++MODULES		+= drivers/navstik
++MODULES		+= drivers/boards/navstik
++MODULES		+= drivers/bmp180
++MODULES		+= drivers/mpu60x0
++MODULES		+= drivers/hmc5883
++MODULES		+= drivers/gps
++MODULES		+= modules/sensors
++
++#
++# System commands
++#
++#MODULES		+= systemcmds/eeprom
++MODULES		+= systemcmds/bl_update
++MODULES		+= systemcmds/boardinfo
++MODULES		+= systemcmds/i2c
++MODULES		+= systemcmds/mixer
++MODULES		+= systemcmds/perf
++MODULES		+= systemcmds/pwm
++MODULES		+= systemcmds/reboot
++MODULES		+= systemcmds/top
++MODULES		+= systemcmds/tests
++
++#
++# Libraries
++#
++MODULES		+= modules/systemlib
++MODULES		+= modules/systemlib/mixer
++MODULES		+= modules/uORB
++
++#
++# Transitional support - add commands from the NuttX export archive.
++#
++# In general, these should move to modules over time.
++#
++# Each entry here is <command>.<priority>.<stacksize>.<entrypoint> but we use a helper macro
++# to make the table a bit more readable.
++#
++define _B
++	$(strip $1).$(or $(strip $2),SCHED_PRIORITY_DEFAULT).$(or $(strip $3),CONFIG_PTHREAD_STACK_DEFAULT).$(strip $4)
++endef
++
++#                  command                 priority                   stack  entrypoint
++BUILTIN_COMMANDS := \
++	$(call _B, sercon,                 ,                          2048,  sercon_main                ) \
++	$(call _B, serdis,                 ,                          2048,  serdis_main                )
+diff --git a/mk/PX4/config_px4fmu_APM.mk b/mk/PX4/config_px4fmu_APM.mk
+index 2b879dd..6b28188 100644
+--- a/mk/PX4/config_px4fmu_APM.mk
++++ b/mk/PX4/config_px4fmu_APM.mk
+@@ -5,7 +5,7 @@
+ #
+ # Use the configuration's ROMFS.
+ #
+-ROMFS_ROOT	 = $(SKETCHBOOK)/mk/PX4/ROMFS
++#ROMFS_ROOT	 = $(SKETCHBOOK)/mk/PX4/ROMFS
+ 
+ MODULES		+= $(APM_MODULE_DIR)
+ 
+diff --git a/mk/apm.mk b/mk/apm.mk
+index cc07608..68b02e8 100644
+--- a/mk/apm.mk
++++ b/mk/apm.mk
+@@ -37,6 +37,11 @@ endif
+ ifeq ($(HAL_BOARD),HAL_BOARD_PX4)
+ include $(MK_DIR)/board_px4.mk
+ endif
++
++ifeq ($(HAL_BOARD),HAL_BOARD_NAVSTIK)
++include $(MK_DIR)/board_navstik.mk
++endif
++
+ endif
+ 
+ endif
+diff --git a/mk/board_navstik.mk b/mk/board_navstik.mk
+new file mode 100644
+index 0000000..8cc3c41
+--- /dev/null
++++ b/mk/board_navstik.mk
+@@ -0,0 +1,3 @@
++TOOLCHAIN = NATIVE
++include $(MK_DIR)/find_tools.mk
++include $(MK_DIR)/navstik_targets.mk
+diff --git a/mk/environ.mk b/mk/environ.mk
+index 362696c..127e3d4 100644
+--- a/mk/environ.mk
++++ b/mk/environ.mk
+@@ -115,6 +115,10 @@ ifneq ($(findstring apm2, $(MAKECMDGOALS)),)
+ HAL_BOARD = HAL_BOARD_APM2
+ endif
+ 
++ifneq ($(findstring navstik, $(MAKECMDGOALS)),)
++HAL_BOARD = HAL_BOARD_NAVSTIK
++endif
++
+ # default to APM2
+ ifeq ($(HAL_BOARD),)
+ #$(warning No HAL_BOARD in config.mk - defaulting to HAL_BOARD_APM2)
+diff --git a/mk/navstik_targets.mk b/mk/navstik_targets.mk
+new file mode 100644
+index 0000000..d2d5291
+--- /dev/null
++++ b/mk/navstik_targets.mk
+@@ -0,0 +1,58 @@
++# NAVSTIK build is via external build system
++
++ifneq ($(NAVSTIK_ROOT),)
++
++# try to cope with relative paths
++ifeq ($(wildcard $(NAVSTIK_ROOT)/NuttX/nuttx),)
++NAVSTIK_ROOT := $(shell cd $(SKETCHBOOK)/$(NAVSTIK_ROOT) && pwd)
++endif
++ifeq ($(wildcard $(NAVSTIK_ROOT)/NuttX/nuttx),)
++$(error ERROR: NAVSTIK_ROOT not set correctly - no nuttx directory found)
++endif
++
++NAVSTIK_CONFIG_FILE=$(MK_DIR)/Navstik/config_navstik_default.mk
++SKETCHFLAGS=$(SKETCHLIBINCLUDES) -I$(PWD) -DCONFIG_HAL_BOARD=HAL_BOARD_NAVSTIK -DSKETCHNAME="\\\"$(SKETCH)\\\"" -DSKETCH_MAIN=ArduPilot_main
++NAVSTIK_MAKE = make -C $(BUILDROOT) -f $(NAVSTIK_ROOT)/makefiles/firmware.mk CONFIG_FILE=$(PWD)/$(NAVSTIK_CONFIG_FILE) EXTRADEFINES="$(SKETCHFLAGS) "$(EXTRAFLAGS) APM_MODULE_DIR=$(BUILDROOT) SKETCHBOOK=$(SKETCHBOOK) NAVSTIK_ROOT=$(NAVSTIK_ROOT)
++
++$(BUILDROOT)/module.mk:
++	$(RULEHDR)
++	$(v) echo "# Auto-generated file - do not edit" > $@
++	$(v) echo "MODULE_COMMAND = ArduPilot" >> $@
++	$(v) echo "SRCS = $(SKETCH).cpp $(SKETCHLIBSRCS)" >> $@
++	$(v) echo "MODULE_STACKSIZE = 4096" >> $@
++	$(v) echo "MAXOPTIMIZATION  = -Os" >> $@
++
++navstik: $(NAVSTIK_ROOT)/Archives/navstik.export $(SKETCHCPP) $(BUILDROOT)/module.mk
++	$(RULEHDR)
++	$(v) echo "Nuttx 'make firmware' with this command : $(NAVSTIK_MAKE)"
++	$(v) $(NAVSTIK_MAKE) firmware
++	$(v) /bin/rm -f $(SKETCH).navstik
++	$(v) cp $(NAVSTIK_ROOT)/makefiles/build/firmware.navstik $(SKETCH).navstik
++	$(v) echo "NAVSTIK $(SKETCH) Firmware is in $(SKETCH).navstik"
++
++navstik-clean: clean navstik-archives-clean
++	$(v) /bin/rm -rf $(NAVSTIK_ROOT)/makefiles/build $(NAVSTIK_ROOT)/Build
++
++navstik-upload: navstik
++	$(RULEHDR)
++	$(NAVSTIK_MAKE) upload
++
++navstik-archives-clean:
++	$(v) /bin/rm -rf $(NAVSTIK_ROOT)/Archives
++
++$(NAVSTIK_ROOT)/Archives/navstik.export:
++	$(v) echo "Nuttx 'make archives'"
++	make -C $(NAVSTIK_ROOT) archives
++
++navstik-archives: $(NAVSTIK_ROOT)/Archives/navstik.export
++
++else
++
++navstik:
++	$(error ERROR: You need to add NAVSTIK_ROOT to your config.mk)
++
++navstik-clean: navstik
++
++navstik-upload: navstik
++
++endif

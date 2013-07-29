@@ -1,0 +1,64 @@
+#!nsh
+ 
+# Disable USB and autostart
+set USB no
+ 
+echo "[init] doing Navstik Pandapilot startup..."
+ 
+#
+# Start the ORB (first app to start)
+#
+uorb start
+ 
+#
+# Load microSD params
+#
+echo "[init] loading microSD params"
+param select /fs/microsd/params
+if [ -f /fs/microsd/params ]
+then
+	param load /fs/microsd/params
+fi
+ 
+#
+# Force some key parameters to sane values
+# MAV_TYPE     1 = fixed wing, 2 = quadrotor, 13 = hexarotor
+#              see https://pixhawk.ethz.ch/mavlink/
+#
+param set MAV_TYPE 2
+ 
+#
+# Start MAVLink (depends on orb)
+#
+mavlink start -d /dev/ttyS1 -b 57600
+usleep 5000
+ 
+#
+# Start the commander (depends on orb, mavlink)
+#
+commander start
+ 
+#
+# Start the sensors (depends on orb, px4io)
+#
+sh /etc/init.d/rc.sensors
+ 
+#
+# Start GPS interface (depends on orb)
+#
+gps start
+ 
+ 
+#
+# Load mixer and start controllers
+#
+#mixer load /dev/pwm_output /etc/mixers/FMU_Q.mix
+#control_demo start
+ 
+#
+# Start logging
+#
+sdlog start -s 4
+ 
+echo "[init] startup done, exiting"
+exit
